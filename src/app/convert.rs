@@ -7,7 +7,7 @@
 use quokka_domain::{tr, trf};
 use super::*;
 use quokka_domain::format::format_size;
-use quokka_domain::imgconv::{can_read, target_name, ConvertOptions, ImageFormat, PngLevel};
+use quokka_domain::imgconv::{can_read, ConvertOptions, ImageFormat, PngLevel};
 use quokka_infra::imgconv::{estimate, Estimate};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -284,10 +284,6 @@ impl QuokkaApp {
                 if r.lost_focus() && enter {
                     submit = true;
                 }
-                let example = d.sources.iter().find(|p| p.is_file()).cloned().unwrap_or_else(|| PathBuf::from(tr!("фото.jpg", "photo.jpg")));
-                let name = target_name(&example, d.opts.format, &d.opts.suffix);
-                let from = example.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                ui.label(RichText::new(format!("{from} → {}", name.to_string_lossy())).size(12.5).color(MUTED));
             });
             if !d.to_folder && d.opts.suffix.is_empty() {
                 let warn = if d.opts.overwrite {
