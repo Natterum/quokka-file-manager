@@ -11,8 +11,11 @@ pub fn is_move(ctrl: bool, shift: bool, sources: &[PathBuf], dest: &Path) -> boo
         false
     } else if shift {
         true
+    } else if let (Some(s), Some((d, _))) = (sources.first(), crate::remote::split(dest)) {
+        // on one server a move is a cheap rename; between machines copy by default
+        crate::remote::split(s).is_some_and(|(site, _)| site == d)
     } else {
-        sources.first().is_some_and(|s| same_volume(s, dest))
+        sources.first().is_some_and(|s| !crate::remote::is_remote(s) && same_volume(s, dest))
     }
 }
 

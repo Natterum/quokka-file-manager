@@ -8,9 +8,11 @@ pub mod kind;
 pub mod lang;
 pub mod ops;
 pub mod paths;
+pub mod remote;
 pub mod rename;
 pub mod selection;
 pub mod transfer;
+pub mod update;
 
 pub use entry::{Entry, Filter, SortKey};
 pub use kind::FileKind;

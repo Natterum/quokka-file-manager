@@ -92,6 +92,10 @@ impl QuokkaApp {
                     self.toast(tr!("Сначала извлеките файлы из архива через F5", "Extract files with F5 before dragging to another app"), false);
                     return;
                 }
+                if d.sources.iter().any(|s| quokka_domain::remote::is_remote(s)) {
+                    self.toast(tr!("Файлы с сервера сначала скопируйте на диск (F5)", "Copy server files to a local disk first (F5)"), false);
+                    return;
+                }
                 dnd::drag_out(self.hwnd, &d.sources);
                 self.release_pointer = true;
                 self.reload_all();

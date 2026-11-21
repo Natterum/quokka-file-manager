@@ -2,6 +2,7 @@
 
 use quokka_core::ports::{FileSystem, Size};
 use quokka_domain::entry::Meta;
+use quokka_domain::remote;
 use quokka_domain::Entry;
 use std::fs;
 use std::io;
@@ -61,6 +62,7 @@ fn meta(name: &str, path: &Path, link: &fs::Metadata) -> Meta {
 
 impl FileSystem for StdFs {
     fn read_dir(&self, dir: &Path, cancel: &AtomicBool) -> io::Result<Vec<Entry>> {
+        if remote::is_remote(dir) { return crate::net::read_dir(dir, cancel); }
         if crate::archive::location(dir).is_some() { return crate::archive::read_dir(dir, cancel); }
         let mut out = Vec::new();
         for (i, de) in fs::read_dir(dir)?.flatten().enumerate() {
@@ -80,6 +82,7 @@ impl FileSystem for StdFs {
     }
 
     fn stat(&self, path: &Path) -> Option<Meta> {
+        if remote::is_remote(path) { return crate::net::stat(path); }
         if crate::archive::is_member(path) { return crate::archive::stat(path); }
         let link = fs::symlink_metadata(path).ok()?;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -87,6 +90,7 @@ impl FileSystem for StdFs {
     }
 
     fn check_dir(&self, dir: &Path) -> Result<(), String> {
+        if remote::is_remote(dir) { return crate::net::check_dir(dir); }
         if crate::archive::location(dir).is_some() {
             return crate::archive::read_dir(dir, &AtomicBool::new(false)).map(|_| ()).map_err(|e| e.to_string());
         }
@@ -113,6 +117,7 @@ impl FileSystem for StdFs {
     }
 
     fn disk_space(&self, path: &Path) -> Option<(u64, u64)> {
+        if remote::is_remote(path) { return crate::net::disk_space(path); }
         let archive = crate::archive::location(path);
         let path = archive.as_ref().map_or(path, |(a, _)| a.as_path());
         match (fs2::total_space(path), fs2::available_space(path)) {
@@ -122,6 +127,7 @@ impl FileSystem for StdFs {
     }
 
     fn tree_size(&self, root: &Path, cancel: &AtomicBool) -> Option<Size> {
+        if remote::is_remote(root) { return crate::net::tree_size(root, cancel); }
         if crate::archive::is_member(root) {
             return Some(match crate::archive::size(root) { Ok(bytes) => Size { bytes, skipped: 0 }, Err(_) => Size { bytes: 0, skipped: 1 } });
         }

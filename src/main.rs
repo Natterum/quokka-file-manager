@@ -52,8 +52,29 @@ pub fn title() -> &'static str {
 
 fn main() -> eframe::Result<()> {
     install_crash_log();
+    // after a self-update: `--updated-from <pid>` (portable: wait for the old process to
+    // exit so the single-window check does not find it) or `--updated` (after the MSI)
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let mut updated = false;
+    let mut rest = args.as_slice();
+    match rest.first().and_then(|a| a.to_str()) {
+        Some("--updated-from") => {
+            if let Some(pid) = rest.get(1).and_then(|p| p.to_str()).and_then(|p| p.parse().ok()) {
+                quokka_infra::update::wait_for_exit(pid, std::time::Duration::from_secs(30));
+            }
+            updated = true;
+            rest = rest.get(2..).unwrap_or_default();
+        }
+        Some("--updated") => {
+            updated = true;
+            rest = &rest[1..];
+        }
+        _ => {}
+    }
+    // files left by the previous update (the replaced executable, packages)
+    std::thread::spawn(quokka_infra::update::cleanup);
     // optional first argument: folder to open
-    let start = std::env::args_os().nth(1).map(std::path::PathBuf::from).filter(|p| p.is_dir());
+    let start = rest.first().map(std::path::PathBuf::from).filter(|p| p.is_dir());
     // defaults (names of the standard favourites) follow the system language
     quokka_domain::lang::set(config::system_language());
     let settings = config::Settings::load();
@@ -74,7 +95,7 @@ fn main() -> eframe::Result<()> {
         TITLE,
         options,
         Box::new(move |cc| {
-            Ok(Box::new(app::QuokkaApp::new(cc, start)))
+            Ok(Box::new(app::QuokkaApp::new(cc, start, updated)))
         }),
     )
 }

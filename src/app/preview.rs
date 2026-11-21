@@ -199,7 +199,11 @@ fn load(
         return Err(unsupported_text_preview().into());
     }
     let limit = if photo { 64 * 1024 * 1024 } else { 512 * 1024 };
-    let (data, total) = quokka_infra::archive::read(path, limit, !photo, cancel)?;
+    let (data, total) = if quokka_domain::remote::is_remote(path) {
+        quokka_infra::xfer::read_limited(path, limit)?
+    } else {
+        quokka_infra::archive::read(path, limit, !photo, cancel)?
+    };
     if cancel.load(Ordering::Relaxed) {
         return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
     }
