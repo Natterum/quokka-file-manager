@@ -1,0 +1,33 @@
+[package]
+name = "quokka-infra"
+version = "0.1.0"
+edition = "2021"
+description = "Quokka infrastructure: std::fs and Windows shell adapters for the core ports, ZIP, file search, clipboard, icons."
+
+[dependencies]
+quokka-domain = { path = "../domain" }
+quokka-core = { path = "../core" }
+regex = { workspace = true }
+chrono = { workspace = true }
+resvg = { version = "0.44", default-features = false }
+fs2 = "0.4"
+flate2 = "1"
+crc32fast = "1"
+notify = "6.1.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "ico"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
