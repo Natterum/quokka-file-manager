@@ -113,6 +113,7 @@ impl QuokkaApp {
                         out.item(ui, Some(Glyph::ArrowRight), tr!("Переместить в другую панель…", "Move to other pane…"), "F6", has_targets, Action::Move);
                         menu_sep(ui);
                         out.item(ui, Some(Glyph::Archive), tr!("Создать ZIP-архив…", "Create ZIP archive…"), "Alt+F5", has_targets, Action::Zip);
+                        out.item(ui, Some(Glyph::Image), tr!("Конвертировать изображения…", "Convert images…"), "Ctrl+Shift+E", has_targets, Action::ConvertImages);
                         out.item(ui, Some(Glyph::Unpack), tr!("Распаковать ZIP…", "Extract ZIP…"), "Alt+F6", has_targets, Action::Unzip);
                         menu_sep(ui);
                         out.item_ex(ui, Some(Glyph::Trash), tr!("Удалить в корзину", "Move to Recycle Bin"), "F8 / Del", has_targets, true, Action::Delete);

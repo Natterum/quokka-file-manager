@@ -10,6 +10,7 @@ pub mod ftp;
 pub mod iconsrc;
 pub mod net;
 pub mod pick;
+pub mod imgconv;
 pub mod rename;
 pub mod search;
 pub mod sftp;

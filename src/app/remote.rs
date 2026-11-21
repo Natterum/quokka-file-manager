@@ -704,7 +704,7 @@ pub(super) fn local_only(a: &Action) -> bool {
     matches!(a,
         Action::Edit | Action::ClipboardCut | Action::ClipboardCopy | Action::ClipboardPaste |
         Action::Zip | Action::Unzip | Action::FindFiles | Action::CreateWindows |
-        Action::OpenInExplorer | Action::Properties | Action::FolderProperties | Action::MultiRename)
+        Action::OpenInExplorer | Action::Properties | Action::FolderProperties | Action::MultiRename | Action::ConvertImages)
 }
 
 /// Whether `path` is on an SFTP server (where an SSH terminal can be opened).

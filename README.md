@@ -20,6 +20,7 @@ The executable is named `quokka`; the window is titled “Quokka File Manager”
 - **Background copy, move, and delete operations**, with progress and cancellation (`Esc`).
 - **Viewer** (F3): PNG/JPEG/BMP/GIF/WebP/ICO images with Fit and zoom controls, and UTF-8 text files (the first 512 KB). Archives, binary files, and unsupported formats display an error. Reading and decoding run in the background; viewing also works inside ZIP archives.
 - **Browse ZIP archives as folders**: Enter or double-click opens an archive in the current tab, including nested and empty folders. `..` / Backspace goes up one level, F3 views a file, and F5 extracts selected files and folders through the operation queue. Archives are read-only; ZIP64, 7z, and nested archives are not yet supported.
+- **Batch image conversion** (`Ctrl+Shift+E`, context menu): convert marked images and folders (recursively) to JPEG, PNG, WebP (lossy or lossless), AVIF, BMP, TIFF, GIF, ICO, TGA or QOI with a quality setting. By default each result is saved next to its original with an editable name suffix (`photo.png` → `photo_conv.webp`); a destination folder (keeping subfolders) is optional. The dialog estimates the resulting size from a few sample files. Runs in parallel through the operation queue; EXIF orientation is applied, existing files are skipped unless overwrite is checked.
 - **Terminal in the current folder** (`Ctrl+Shift+P`, Tools menu): PowerShell on Windows, Terminal on macOS, and `x-terminal-emulator` on Linux. Inside a ZIP archive, opens the folder containing the archive.
 - **Select by mask** (`Ctrl+S`), deselect by mask (`Ctrl+Shift+S`), and invert selection (`Ctrl+Shift+I`). Supports `*`, `?`, and multiple masks separated by `;`, such as `*.jpg;*.png`. Matching is case-insensitive and applies to visible items, including folders.
 - **External editor** (F4): opens the file in the program configured in settings (Notepad on Windows by default, `$VISUAL`/`$EDITOR` on other systems).
@@ -114,6 +115,7 @@ Finished files are placed in `release/windows-x86/` and `release/windows-x64/`; 
 | `fs2` | infra | Total and free disk space |
 | `notify` | infra | Watching open folders for changes |
 | `flate2`, `crc32fast` | infra | ZIP compression and checksums |
+| `image`, `webp` | infra | Image conversion (`webp` builds libwebp for lossy WebP) |
 | `image` | infra, UI | Icon decoding |
 | `windows-sys` | infra (Windows) | Clipboard, drag and drop, Recycle Bin, shell icons |
 | `resvg` | infra, UI | Rasterizing the SVG logo into a window icon |
