@@ -45,6 +45,11 @@ jobs:
           rustup default stable
           if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain selection failed.' }
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Test, build and package
         env:
           RUST_TARGET: ${{ matrix.target }}
