@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI package for Quokka File Manager (WiX Toolset v5).
+  Built by .github/scripts/build-windows.ps1:
+    wix build installer/quokka.wxs -arch x64|x86 -ext WixToolset.UI.wixext
+      -d Version=1.2.3 -d ExePath=... -d LicenseRtf=... -o quokka.msi
+
+  UpgradeCode must never change: it is how a new MSI finds and replaces the old one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Quokka File Manager"
+           Manufacturer="Natterum"
+           Version="$(var.Version)"
+           UpgradeCode="A6D8294B-AD9B-4F88-8F77-6C1691ED3219"
+           Language="1033"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <SummaryInformation Description="Quokka File Manager $(var.Version) Installer" />
+
+    <!-- installing any other version replaces the installed one; downgrades are refused -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="QuokkaIcon" SourceFile="$(var.ExePath)" />
+    <Property Id="ARPPRODUCTICON" Value="QuokkaIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Natterum/quokka-file-manager" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Natterum/quokka-file-manager/issues" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/Natterum/quokka-file-manager/releases" />
+
+    <!-- an upgrade goes into the folder the previous version was installed to -->
+    <Property Id="PREVIOUSFOLDER">
+      <RegistrySearch Id="FindPreviousFolder" Root="HKLM" Key="Software\Natterum\Quokka File Manager"
+                      Name="InstallFolder" Type="raw" />
+    </Property>
+    <SetDirectory Id="INSTALLFOLDER" Value="[PREVIOUSFOLDER]" Condition="PREVIOUSFOLDER" Sequence="both" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Quokka File Manager" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <ComponentGroup Id="ProductFiles" Directory="INSTALLFOLDER">
+      <Component Id="QuokkaExe">
+        <File Id="QuokkaExeFile" Source="$(var.ExePath)" Name="quokka.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Quokka File Manager"
+                    Description="Two-pane file manager" WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+        </File>
+      </Component>
+      <!-- tells the built-in updater that this copy is updated with the MSI -->
+      <Component Id="MsiMarker">
+        <File Id="MsiMarkerFile" Source="$(sys.SOURCEFILEDIR)quokka-msi.txt" Name="quokka-msi.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="Readme">
+        <File Id="ReadmeFile" Source="$(var.ReadmePath)" Name="README.md" KeyPath="yes" />
+      </Component>
+      <Component Id="Changelog">
+        <File Id="ChangelogFile" Source="$(var.ChangelogPath)" Name="CHANGELOG.md" KeyPath="yes" />
+      </Component>
+      <Component Id="License">
+        <File Id="LicenseFile" Source="$(var.LicensePath)" Name="LICENSE.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="InstallFolderRegistry">
+        <RegistryValue Root="HKLM" Key="Software\Natterum\Quokka File Manager" Name="InstallFolder"
+                       Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Quokka File Manager" Level="1">
+      <ComponentGroupRef Id="ProductFiles" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <!-- "Launch Quokka" on the last page of the interactive install -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Quokka File Manager" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <CustomAction Id="LaunchQuokka" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]quokka.exe&quot;" Return="asyncNoWait" Impersonate="yes" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchQuokka"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+  </Package>
+</Wix>

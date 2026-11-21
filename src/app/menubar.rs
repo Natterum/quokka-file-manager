@@ -63,6 +63,8 @@ impl QuokkaApp {
             )
         };
         let has_undo = self.undo.is_some();
+        let on_server = quokka_domain::remote::is_remote(&self.ap_ref().path);
+        let on_sftp = super::remote::is_sftp(&self.ap_ref().path);
         let (dual, hidden, queue_open) = (self.settings.dual, self.settings.show_hidden, self.queue_open);
         let (regex, case) = (self.settings.regex, self.settings.case_sensitive);
         let mut out = BarOut::default();
@@ -111,12 +113,16 @@ impl QuokkaApp {
                         out.item(ui, Some(Glyph::ArrowRight), tr!("Переместить в другую панель…", "Move to other pane…"), "F6", has_targets, Action::Move);
                         menu_sep(ui);
                         out.item(ui, Some(Glyph::Archive), tr!("Создать ZIP-архив…", "Create ZIP archive…"), "Alt+F5", has_targets, Action::Zip);
+                        out.item(ui, Some(Glyph::Image), tr!("Конвертировать изображения…", "Convert images…"), "Ctrl+Shift+E", has_targets, Action::ConvertImages);
                         out.item(ui, Some(Glyph::Unpack), tr!("Распаковать ZIP…", "Extract ZIP…"), "Alt+F6", has_targets, Action::Unzip);
                         menu_sep(ui);
                         out.item_ex(ui, Some(Glyph::Trash), tr!("Удалить в корзину", "Move to Recycle Bin"), "F8 / Del", has_targets, true, Action::Delete);
                         out.item_ex(ui, None, tr!("Удалить навсегда", "Delete permanently"), "Shift+Del", has_targets, true, Action::DeletePermanent);
                         menu_sep(ui);
                         out.item(ui, None, tr!("Открыть в Проводнике", "Open in Explorer"), "", !is_pc, Action::OpenInExplorer);
+                        if cfg!(windows) {
+                            out.item(ui, Some(Glyph::Info), tr!("Свойства", "Properties"), "Ctrl+Alt+Enter", has_cur || !is_pc, Action::Properties);
+                        }
                         menu_sep(ui);
                         out.item(ui, Some(Glyph::Close), tr!("Выход", "Exit"), "F10", true, Action::Quit);
                     });
@@ -195,8 +201,15 @@ impl QuokkaApp {
                         out.item(ui, Some(Glyph::Star), tr!("Добавить в избранное", "Add to favorites"), "Ctrl+D", true, Action::AddFavorite);
                     });
 
-                    top_menu(ui, tr!("Сервис", "Tools"), 240.0, |ui| {
-                        out.item(ui, None, tr!("Открыть PowerShell / Terminal", "Open PowerShell / Terminal"), "Ctrl+Shift+P", !is_pc, Action::OpenTerminal);
+                    top_menu(ui, tr!("Сервис", "Tools"), 280.0, |ui| {
+                        out.item(ui, Some(Glyph::Cloud), tr!("Подключение к серверу (SFTP, FTP)…", "Connect to a server (SFTP, FTP)…"), "Ctrl+K", true, Action::Connect);
+                        out.item(ui, None, tr!("Отключиться от сервера", "Disconnect from server"), "", on_server, Action::Disconnect);
+                        menu_sep(ui);
+                        if on_sftp {
+                            out.item(ui, Some(Glyph::Terminal), tr!("SSH-терминал (PuTTY / ssh)", "SSH terminal (PuTTY / ssh)"), "Ctrl+Shift+P", true, Action::OpenTerminal);
+                        } else {
+                            out.item(ui, None, tr!("Открыть PowerShell / Terminal", "Open PowerShell / Terminal"), "Ctrl+Shift+P", !is_pc && !on_server, Action::OpenTerminal);
+                        }
                         menu_sep(ui);
                         out.item(ui, Some(Glyph::Search), tr!("Найти файлы…", "Find files…"), "Alt+F7", true, Action::FindFiles);
                         out.item(ui, Some(Glyph::Download), tr!("Очередь операций", "Operation queue"), "Ctrl+J", true, Action::ToggleQueue);
@@ -207,6 +220,7 @@ impl QuokkaApp {
                     top_menu(ui, tr!("Справка", "Help"), 230.0, |ui| {
                         out.item(ui, Some(Glyph::Question), tr!("Горячие клавиши", "Keyboard shortcuts"), "F1", true, Action::Help);
                         menu_sep(ui);
+                        out.item(ui, Some(Glyph::Download), tr!("Проверить обновления…", "Check for updates…"), "", true, Action::CheckUpdates);
                         out.item(ui, None, tr!("О программе Quokka", "About Quokka"), "", true, Action::About);
                     });
                 });
@@ -435,6 +449,8 @@ fn releases() -> &'static [Release] {
                 }
             }
         }
+        // an empty «Unreleased» right after a release has nothing to show
+        out.retain(|r| !r.sections.is_empty());
         out
     })
 }

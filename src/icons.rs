@@ -124,6 +124,8 @@ pub enum Glyph {
     Clipboard,
     Check,
     Unpack,
+    Info,
+    Terminal,
 }
 
 impl Glyph {
@@ -434,6 +436,16 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
                 s,
             ));
             p.circle_filled(at(0.5, 0.7), w * 0.045, c);
+        }
+        Glyph::Info => {
+            p.circle_stroke(r.center(), w * 0.38, s);
+            p.circle_filled(at(0.5, 0.32), w * 0.045, c);
+            p.line_segment([at(0.5, 0.44), at(0.5, 0.7)], s);
+        }
+        Glyph::Terminal => {
+            p.rect_stroke(Rect::from_min_max(at(0.1, 0.18), at(0.9, 0.82)), 2.5, s);
+            p.add(Shape::line(vec![at(0.26, 0.38), at(0.42, 0.52), at(0.26, 0.66)], s));
+            p.line_segment([at(0.5, 0.66), at(0.72, 0.66)], s);
         }
     }
 }

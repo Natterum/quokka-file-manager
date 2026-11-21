@@ -18,6 +18,10 @@ pub fn parent_of(path: &Path) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
         return None;
     }
+    if crate::remote::is_remote(path) {
+        // above the server root is "This PC", like above a drive
+        return Some(crate::remote::parent(path).unwrap_or_default());
+    }
     match path.parent() {
         Some(p) => Some(p.to_path_buf()),
         None if cfg!(windows) => Some(PathBuf::new()),

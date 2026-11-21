@@ -723,6 +723,9 @@ impl FileOps for StdFileOps {
         if let Err(error) = validate_operation(spec) {
             return Job::spawn(spec.title(), false, waker, move |_| Err(error));
         }
+        if let Some(job) = start_remote(spec, waker.clone()) {
+            return job;
+        }
         match spec.clone() {
             OpSpec::Copy { sources, dest, overwrite } => start_copy(sources, dest, overwrite, waker),
             OpSpec::Move { sources, dest, overwrite } => start_move(sources, dest, overwrite, waker),
@@ -732,8 +735,40 @@ impl FileOps for StdFileOps {
             OpSpec::MoveBack { pairs } => start_move_back(pairs, waker),
             OpSpec::Zip { sources, dest } => start_zip(sources, dest, waker),
             OpSpec::Unzip { archive, dest, overwrite } => start_unzip(archive, dest, overwrite, waker),
+            OpSpec::ConvertImages { sources, dest, options } => crate::imgconv::start_convert(sources, dest, options, waker),
         }
     }
+}
+
+/// Operations that touch an SFTP server run through [`crate::xfer`].
+fn start_remote(spec: &OpSpec, waker: Waker) -> Option<Job> {
+    use crate::xfer;
+    let title = spec.title();
+    Some(match spec.clone() {
+        OpSpec::Copy { sources, dest, overwrite } if xfer::involves_remote(&sources, Some(&dest)) => {
+            Job::spawn(title, true, waker, move |rep| xfer::copy(&sources, &dest, overwrite, rep))
+        }
+        OpSpec::Move { sources, dest, overwrite } if xfer::involves_remote(&sources, Some(&dest)) => {
+            Job::spawn(title, false, waker, move |rep| xfer::move_items(&sources, &dest, overwrite, rep))
+        }
+        // a server has no Recycle Bin: deleting there is always permanent
+        OpSpec::Delete { sources } | OpSpec::Recycle { sources } if xfer::involves_remote(&sources, None) => {
+            Job::spawn(title, false, waker, move |rep| xfer::delete(&sources, rep))
+        }
+        OpSpec::MoveBack { pairs } if pairs.iter().any(|(a, b)| xfer::involves_remote(&[a.clone(), b.clone()], None)) => {
+            Job::spawn(title, false, waker, move |rep| {
+                for (from, to) in &pairs {
+                    let parent = quokka_domain::paths::parent_of(to).unwrap_or_default();
+                    if !parent.as_os_str().is_empty() {
+                        crate::xfer::mkdir_all(&parent).map_err(|e| e.to_string())?;
+                    }
+                    crate::xfer::move_items(std::slice::from_ref(from), to, false, rep)?;
+                }
+                Ok(tr!("Перемещение отменено", "Move undone").into())
+            })
+        }
+        _ => return None,
+    })
 }
 
 /// The real queue with the real file operations (moved here from the core tests,
@@ -828,11 +863,15 @@ pub fn validate_operation(spec: &OpSpec) -> Result<(), String> {
     let readonly = || Err(tr!("Архив открыт только для чтения. F5 — извлечь выбранное в обычную папку.", "Archive is read-only. F5 extracts selected items to a regular folder.").into());
     let (sources, dest, allow_members): (&[PathBuf], Option<&Path>, bool) = match spec {
         OpSpec::Copy { sources, dest, .. } => (sources, Some(dest), true),
-        OpSpec::Move { sources, dest, .. } | OpSpec::Zip { sources, dest } => (sources, Some(dest), false),
+        OpSpec::Move { sources, dest, .. } | OpSpec::Zip { sources, dest } | OpSpec::ConvertImages { sources, dest: Some(dest), .. } => (sources, Some(dest), false),
+        OpSpec::ConvertImages { sources, dest: None, .. } => (sources, None, false),
         OpSpec::Delete { sources } | OpSpec::Recycle { sources } => (sources, None, false),
         OpSpec::Unzip { archive, dest, .. } => (std::slice::from_ref(archive), Some(dest), false),
         _ => return Ok(()),
     };
+    if matches!(spec, OpSpec::Zip { .. } | OpSpec::Unzip { .. }) && crate::xfer::involves_remote(sources, dest) {
+        return Err(tr!("Архивы на сервере не поддерживаются — сначала скопируйте файлы на диск.", "Archives on a server are not supported — copy the files to a local disk first.").into());
+    }
     if dest.is_some_and(|d| crate::archive::location(d).is_some()) { return readonly(); }
     if !allow_members && sources.iter().any(|s| crate::archive::is_member(s)) { return readonly(); }
     Ok(())

@@ -4,7 +4,9 @@ param(
     [ValidateSet('i686-pc-windows-msvc', 'x86_64-pc-windows-msvc')]
     [string]$Target,
     [AllowEmptyString()]
-    [string]$ReleaseTag = ''
+    [string]$ReleaseTag = '',
+    # Build only the ZIP (no WiX Toolset needed).
+    [switch]$SkipMsi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +57,38 @@ try {
     "$hash  $([IO.Path]::GetFileName($archive))" |
         Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
     Write-Host "Package ready: $archive"
+
+    if (-not $SkipMsi) {
+        # MSI installer (WiX Toolset v5: `dotnet tool install --global wix --version 5.0.2`
+        # and `wix extension add --global WixToolset.UI.wixext/5.0.2`).
+        if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
+            throw 'WiX Toolset (wix) is not installed; install it or pass -SkipMsi.'
+        }
+        # MSI ProductVersion is numeric only: 0.2.0-rc.1 -> 0.2.0
+        $msiVersion = ($version -split '[-+]')[0]
+        $wixDir = Join-Path $metadata.target_directory "wix/$arch"
+        New-Item -ItemType Directory -Path $wixDir -Force | Out-Null
+
+        # License page of the installer: LICENSE as plain RTF
+        $licenseText = Get-Content -LiteralPath LICENSE -Raw -Encoding utf8
+        $escaped = $licenseText.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}')
+        $escaped = $escaped -replace "`r?`n", "\par`r`n"
+        $rtf = '{\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}\fs18' + "`r`n" + $escaped + "`r`n}"
+        $licenseRtf = Join-Path $wixDir 'License.rtf'
+        Set-Content -LiteralPath $licenseRtf -Value $rtf -Encoding ascii
+
+        $msi = "release/quokka-v$version-windows-$arch.msi"
+        wix build installer/quokka.wxs -arch $arch -ext WixToolset.UI.wixext `
+            -d "Version=$msiVersion" -d "ExePath=$packageDir/quokka.exe" `
+            -d "ReadmePath=README.md" -d "ChangelogPath=CHANGELOG.md" -d "LicensePath=LICENSE" `
+            -d "LicenseRtf=$licenseRtf" -intermediatefolder $wixDir -o $msi
+        if ($LASTEXITCODE -ne 0) { throw 'MSI build failed.' }
+        Remove-Item -LiteralPath ([IO.Path]::ChangeExtension($msi, '.wixpdb')) -ErrorAction SilentlyContinue
+        $hash = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$hash  $([IO.Path]::GetFileName($msi))" |
+            Set-Content -LiteralPath "$msi.sha256" -Encoding ascii
+        Write-Host "Installer ready: $msi"
+    }
 } finally {
     Pop-Location
 }

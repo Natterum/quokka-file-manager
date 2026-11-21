@@ -94,6 +94,34 @@ pub struct Settings {
     pub language: Lang,
     /// Open tabs at the last exit.
     pub session: Session,
+    /// Saved server connections (SFTP / FTP / FTPS). Passwords are never stored here —
+    /// see `save_password`.
+    pub connections: Vec<Connection>,
+    /// Look for a new version on GitHub at start-up (at most once a day).
+    pub check_updates: bool,
+    /// Unix time of the last successful update check.
+    pub update_checked_at: i64,
+    /// Version the user chose to skip; not offered again by the automatic check.
+    pub update_skip: String,
+}
+
+/// A saved server connection.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Connection {
+    /// Shown in the list; empty — the address is shown.
+    pub name: String,
+    /// `sftp://user@host[:port]`, `ftp://…` or `ftps://…`.
+    pub url: String,
+    /// Log in with this key (SFTP); empty — with a password.
+    pub key_file: String,
+    /// The password (or key passphrase) is kept in the Windows Credential Manager.
+    pub save_password: bool,
+}
+
+impl Connection {
+    pub fn title(&self) -> &str {
+        if self.name.trim().is_empty() { &self.url } else { &self.name }
+    }
 }
 
 /// Open tabs of both panes, restored on the next start.
@@ -205,6 +233,10 @@ impl Default for Settings {
             multi_instance: false,
             language: system_language(),
             session: Session::default(),
+            connections: Vec::new(),
+            check_updates: true,
+            update_checked_at: 0,
+            update_skip: String::new(),
         }
     }
 }
@@ -284,6 +316,9 @@ impl Settings {
                 ["tray_icon", v] => s.tray_icon = flag(v),
                 ["close_to_tray", v] => s.close_to_tray = flag(v),
                 ["multi_instance", v] => s.multi_instance = flag(v),
+                ["check_updates", v] => s.check_updates = flag(v),
+                ["update_checked_at", v] => s.update_checked_at = v.parse().unwrap_or(0),
+                ["update_skip", v] => s.update_skip = unesc(v),
                 ["language", v] => s.language = Lang::from_key(v).unwrap_or(s.language),
                 ["rename_mask", v] if s.rename_masks.len() < HISTORY_LEN => s.rename_masks.push(unesc(v)),
                 ["session_active", v] => s.session.active = usize::from(*v == "1"),
@@ -330,6 +365,9 @@ impl Settings {
                         }
                     }
                 }
+                ["connection", name, url, key, save] => s.connections.push(Connection {
+                    name: unesc(name), url: unesc(url), key_file: unesc(key), save_password: *save == "1",
+                }),
                 ["find_mask", v] if s.find_masks.len() < HISTORY_LEN => s.find_masks.push(unesc(v)),
                 ["find_text", v] if s.find_texts.len() < HISTORY_LEN => s.find_texts.push(unesc(v)),
                 ["place", g, name, path, rest @ ..] => {
@@ -376,12 +414,18 @@ tray_icon	{}
 close_to_tray	{}
 multi_instance	{}
 language	{}
+check_updates	{}
+update_checked_at	{}
+update_skip	{}
 ",
             b(self.restore_session),
             b(self.tray_icon),
             b(self.close_to_tray),
             b(self.multi_instance),
-            self.language.key()
+            self.language.key(),
+            b(self.check_updates),
+            self.update_checked_at,
+            esc(&self.update_skip)
         ));
         for m in &self.rename_masks {
             out.push_str(&format!("rename_mask	{}
@@ -396,6 +440,9 @@ language	{}
             }
             out.push_str(&format!("session_cur_{key}	{}
 ", self.session.cur[pane]));
+        }
+        for c in &self.connections {
+            out.push_str(&format!("connection\t{}\t{}\t{}\t{}\n", esc(&c.name), esc(&c.url), esc(&c.key_file), b(c.save_password)));
         }
         for m in &self.find_masks {
             out.push_str(&format!("find_mask\t{}\n", esc(m)));
@@ -431,7 +478,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn connections_round_trip() {
+        let mut s = Settings::default();
+        s.connections = vec![
+            Connection { name: "Сайт\tпрод".into(), url: "sftp://bob@host:2222".into(), key_file: r"C:\keys\id ed".into(), save_password: false },
+            Connection { name: String::new(), url: "ftps://root@h".into(), key_file: String::new(), save_password: true },
+        ];
+        assert_eq!(Settings::from_text(&s.to_text()).connections, s.connections);
+        assert_eq!(s.connections[1].title(), "ftps://root@h");
+    }
+
+    #[test]
     fn associated_icons_default_and_round_trip() {
+        let d = Settings::from_text("");
+        assert!(d.check_updates && d.update_checked_at == 0 && d.update_skip.is_empty());
+        let mut s = Settings::default();
+        s.check_updates = false;
+        s.update_checked_at = 1_763_700_000;
+        s.update_skip = "0.2.0".into();
+        let r = Settings::from_text(&s.to_text());
+        assert_eq!((r.check_updates, r.update_checked_at, r.update_skip.as_str()), (false, 1_763_700_000, "0.2.0"));
         assert!(!Settings::from_text("").associated_icons);
         let enabled = Settings::from_text("associated_icons\t1\n");
         assert!(enabled.associated_icons);

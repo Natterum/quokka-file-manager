@@ -1,0 +1,2 @@
+Installed by the Quokka File Manager MSI package.
+The built-in updater uses this file to update Quokka with the MSI installer.

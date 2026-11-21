@@ -9,6 +9,10 @@ pub struct NotifyWatcher;
 
 impl Watcher for NotifyWatcher {
     fn watch(&self, dir: &Path, on_change: Box<dyn Fn() + Send + Sync>) -> Option<WatchGuard> {
+        // SFTP has no change notifications; tabs refresh after their own operations
+        if quokka_domain::remote::is_remote(dir) {
+            return None;
+        }
         let archive = crate::archive::location(dir);
         let dir = archive.as_ref().and_then(|(a, _)| a.parent()).unwrap_or(dir);
         let mut w = notify::recommended_watcher(move |res: notify::Result<Event>| match res {

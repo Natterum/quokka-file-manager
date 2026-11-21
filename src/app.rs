@@ -12,6 +12,8 @@ use crate::panel::{parent_of, root_label, Panel, SortKey};
 use quokka_core::ports::Services;
 use quokka_core::Waker;
 use quokka_infra::fsops::StdFileOps;
+use quokka_infra::xfer;
+use quokka_domain::remote::is_remote;
 use crate::theme::{self, *};
 use crate::util::*;
 use eframe::egui::{
@@ -30,6 +32,9 @@ mod menubar;
 mod rename;
 mod preview;
 mod columns;
+mod remote;
+mod updates;
+mod convert;
 
 const ROW_H: f32 = 28.0;
 const TABS_H: f32 = 34.0;
@@ -159,6 +164,8 @@ pub enum Action {
     CloseTab,
     EditPath,
     OpenInExplorer,
+    Properties,
+    FolderProperties,
     AddCurrentFavorite,
     UndoDelete,
     FindFiles,
@@ -166,6 +173,10 @@ pub enum Action {
     CalculateSizes,
     CalculateAllSizes,
     CancelSizes,
+    Connect,
+    Disconnect,
+    CheckUpdates,
+    ConvertImages,
 }
 
 fn fkeys() -> [(Key, &'static str, Action); 12] {
@@ -221,6 +232,9 @@ enum Modal {
     ConfirmQuit,
     Find(Box<find::FindDialog>),
     MultiRename(Box<rename::RenameDialog>),
+    Connect(Box<remote::ConnectDialog>),
+    Update(Box<updates::UpdateDialog>),
+    Convert(Box<convert::ConvertDialog>),
 }
 
 /// What Ctrl+Z takes back.
@@ -449,6 +463,8 @@ pub struct QuokkaApp {
     toast: Option<Toast>,
     /// The last action Ctrl+Z / «Отменить» can take back.
     undo: Option<Undo>,
+    /// Downloaded copies of server files to open once their copy job finishes.
+    open_after: Vec<PathBuf>,
     drives: Vec<PathBuf>,
     /// (total, free) bytes per drive, filled in the background for sidebar tooltips.
     drive_space: Arc<Mutex<HashMap<PathBuf, (u64, u64)>>>,
@@ -481,6 +497,10 @@ pub struct QuokkaApp {
     tray_ready: bool,
     /// The user asked to quit (F10, tray «Выход»): closing must not just hide to the tray.
     exit_requested: bool,
+    /// Results of the update check and download threads.
+    update_inbox: updates::Inbox,
+    /// A newer release found by the start-up check, shown when no dialog is open.
+    update_offer: Option<quokka_infra::update::Release>,
 }
 
 /// The UI's implementation of the core "redraw" signal.
@@ -591,7 +611,7 @@ fn clipboard_operation(files: crate::clipboard::Files, dest: &std::path::Path) -
 }
 
 impl QuokkaApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, start: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, start: Option<PathBuf>, updated: bool) -> Self {
         theme::apply(&cc.egui_ctx);
         let home = config::home();
         let settings = Settings::load();
@@ -624,7 +644,7 @@ impl QuokkaApp {
             side.cur = side.tabs.len() - 1;
             active = 0;
         }
-        let app = QuokkaApp {
+        let mut app = QuokkaApp {
             sides,
             active,
             pane_rects: [None, None],
@@ -636,6 +656,7 @@ impl QuokkaApp {
             allow_close: false,
             toast: None,
             undo: None,
+            open_after: Vec::new(),
             drives,
             drive_space: Default::default(),
             services,
@@ -655,8 +676,14 @@ impl QuokkaApp {
             paste_latch: None,
             tray_ready: false,
             exit_requested: false,
+            update_inbox: Default::default(),
+            update_offer: None,
         };
         app.refresh_drive_space();
+        if updated {
+            app.toast(trf!("Quokka обновлена до версии {}", "Quokka has been updated to version {}", env!("CARGO_PKG_VERSION")), false);
+        }
+        app.auto_check_updates();
         app
     }
 
@@ -896,9 +923,12 @@ impl QuokkaApp {
                 (Modifiers::COMMAND | Modifiers::SHIFT, Key::I, Action::InvertSelection),
                 (Modifiers::COMMAND | Modifiers::SHIFT, Key::S, Action::UnselectMask),
                 (Modifiers::COMMAND | Modifiers::SHIFT, Key::P, Action::OpenTerminal),
+                (Modifiers::COMMAND | Modifiers::SHIFT, Key::E, Action::ConvertImages),
                 (Modifiers::ALT, Key::F5, Action::Zip),
                 (Modifiers::ALT, Key::F6, Action::Unzip),
                 (Modifiers::ALT, Key::F7, Action::FindFiles),
+                // before Alt+Enter, which would otherwise also match Ctrl+Alt+Enter
+                (Modifiers::COMMAND | Modifiers::ALT, Key::Enter, Action::Properties),
                 (Modifiers::ALT, Key::Enter, Action::CalculateSizes),
                 (Modifiers::SHIFT, Key::F4, Action::EditBuiltin),
                 (Modifiers::SHIFT, Key::F8, Action::DeletePermanent),
@@ -923,6 +953,7 @@ impl QuokkaApp {
                 (Modifiers::COMMAND, Key::D, Action::AddFavorite),
                 (Modifiers::COMMAND, Key::Z, Action::UndoDelete),
                 (Modifiers::COMMAND, Key::M, Action::MultiRename),
+                (Modifiers::COMMAND, Key::K, Action::Connect),
                 (Modifiers::ALT, Key::ArrowLeft, Action::Back),
                 (Modifiers::ALT, Key::ArrowRight, Action::Forward),
                 (Modifiers::ALT, Key::ArrowUp, Action::GoUp),
@@ -1007,17 +1038,33 @@ impl QuokkaApp {
     // ───────────────────────────── actions ─────────────────────────────
 
     fn run(&mut self, a: Action, ctx: &egui::Context) {
+        if is_remote(&self.ap_ref().path) && remote::local_only(&a) {
+            self.toast(tr!("На сервере это действие недоступно", "This action is not available on a server"), true);
+            return;
+        }
+        // a server folder we are not logged in to (favorite, typed path, history): log in first
+        if let Action::GoTo(p) = &a {
+            if quokka_domain::remote::split(p).is_some_and(|(site, _)| !quokka_infra::net::is_connected(&site)) {
+                let p = p.clone();
+                self.open_connect(Some(&p));
+                return;
+            }
+        }
         if quokka_infra::archive::location(&self.ap_ref().path).is_some() && matches!(a,
             Action::Rename | Action::MultiRename | Action::Move | Action::Delete | Action::DeletePermanent |
             Action::Edit | Action::EditBuiltin | Action::MkDir | Action::NewFile | Action::CreateWindows |
-            Action::ClipboardCut | Action::ClipboardCopy | Action::ClipboardPaste | Action::Zip | Action::Unzip | Action::FindFiles) {
+            Action::ClipboardCut | Action::ClipboardCopy | Action::ClipboardPaste | Action::Zip | Action::Unzip | Action::FindFiles | Action::ConvertImages) {
             self.toast(tr!("Архив открыт только для чтения. F5 — извлечь выбранное.", "Archive is read-only. F5 extracts selected items."), true);
             return;
         }
         match a {
             Action::OpenTerminal => {
                 let path = self.ap_ref().path.clone();
-                if let Err(e) = fsops::open_terminal(&path) { self.toast(e.to_string(), true); }
+                if let Some((site, dir)) = quokka_domain::remote::split(&path) {
+                    self.open_ssh_terminal(&site, Some(&dir));
+                } else if let Err(e) = fsops::open_terminal(&path) {
+                    self.toast(e.to_string(), true);
+                }
             }
             Action::InvertSelection => self.ap().invert_marks(),
             Action::SelectMask | Action::UnselectMask => {
@@ -1035,6 +1082,8 @@ impl QuokkaApp {
             }
             Action::CancelSizes => self.ap().folder_sizes.stop(),
             Action::Help => self.modal = Modal::Help,
+            Action::Connect => self.open_connect(None),
+            Action::Disconnect => self.disconnect_current(),
             Action::About => self.modal = Modal::About,
             Action::FindFiles => self.open_find(),
             Action::UndoDelete => match self.undo.take() {
@@ -1060,6 +1109,7 @@ impl QuokkaApp {
                 None => self.toast(tr!("Нечего отменять", "Nothing to undo"), false),
             },
             Action::MultiRename => self.open_multi_rename(),
+            Action::ConvertImages => self.open_convert(ctx),
             Action::ConfigureColumns(pane) => {
                 self.modal = Modal::Columns(columns::ColumnsDialog::new(pane, self.settings.columns[pane].clone(), false));
             }
@@ -1150,9 +1200,31 @@ impl QuokkaApp {
                     self.toast(trf!("Не удалось открыть Проводник: {e}", "Failed to open Explorer: {e}"), true);
                 }
             }
+            Action::CheckUpdates => self.check_updates_now(),
+            Action::Properties | Action::FolderProperties => {
+                let p = self.ap_ref();
+                let mut paths = if matches!(a, Action::Properties) { p.targets() } else { Vec::new() };
+                if paths.is_empty() {
+                    match p.current() {
+                        Some(e) if e.is_drive && matches!(a, Action::Properties) => paths.push(e.path.clone()),
+                        _ if !p.is_pc() => paths.push(p.path.clone()),
+                        _ => {}
+                    }
+                }
+                if paths.is_empty() {
+                    return;
+                }
+                if paths.iter().any(|path| quokka_infra::archive::is_member(path)) {
+                    self.toast(tr!("Свойства недоступны внутри архива", "Properties are not available inside an archive"), true);
+                    return;
+                }
+                if let Err(e) = quokka_infra::shell_props::show(&paths) {
+                    self.toast(trf!("Не удалось открыть свойства: {e}", "Could not open properties: {e}"), true);
+                }
+            }
             Action::EditPath => {
                 let p = self.ap();
-                p.editing_path = Some(p.path.display().to_string());
+                p.editing_path = Some(remote::shown(&p.path));
                 p.focus_path_edit = true;
             }
             Action::Rename if self.ap_ref().marked.len() > 1 => self.open_multi_rename(),
@@ -1256,7 +1328,7 @@ impl QuokkaApp {
                 self.modal = Modal::Input {
                     kind: if dir { InputKind::MkDir } else { InputKind::NewFile },
                     title: if dir { tr!("Новая папка", "New folder") } else { tr!("Новый файл", "New file") }.into(),
-                    label: trf!("Создать в {}", "Create in {}", self.ap_ref().path.display()),
+                    label: trf!("Создать в {}", "Create in {}", remote::shown(&self.ap_ref().path)),
                     text: if dir { tr!("Новая папка", "New folder") } else { tr!("Новый файл.txt", "New file.txt") }.into(),
                     first: true,
                     error: None,
@@ -1288,7 +1360,7 @@ impl QuokkaApp {
                 }
                 let mut other = self.other_path();
                 if quokka_infra::archive::location(&other).is_some() { other = PathBuf::new(); }
-                let dest = if other.as_os_str().is_empty() { String::new() } else { other.display().to_string() };
+                let dest = if other.as_os_str().is_empty() { String::new() } else { remote::shown(&other) };
                 self.modal = Modal::Transfer { mv: a == Action::Move, sources, dest, overwrite: false, first: true };
             }
             Action::ClipboardCopy | Action::ClipboardCut => {
@@ -1335,7 +1407,8 @@ impl QuokkaApp {
                     self.toast(tr!("Ничего не выбрано", "Nothing selected"), true);
                     return;
                 }
-                let permanent = a == Action::DeletePermanent || !fsops::HAS_RECYCLE_BIN;
+                // a server has no Recycle Bin
+                let permanent = a == Action::DeletePermanent || !fsops::HAS_RECYCLE_BIN || sources.iter().any(|s| is_remote(s));
                 self.modal = Modal::ConfirmDelete { sources, permanent };
             }
         }
@@ -1348,6 +1421,14 @@ impl QuokkaApp {
             self.report(r);
         } else if quokka_infra::archive::is_member(&e.path) {
             self.modal = load_viewer(e.path);
+        } else if is_remote(&e.path) {
+            let dir = remote::temp_copy_dir(&e.path);
+            if let Err(err) = fs::create_dir_all(&dir) {
+                self.toast(err.to_string(), true);
+                return;
+            }
+            self.open_after.push(dir.join(&e.name));
+            self.enqueue(OpSpec::Copy { sources: vec![e.path], dest: dir, overwrite: true });
         } else if let Err(err) = fsops::open_external(&e.path) {
             self.toast(trf!("Не удалось открыть «{}»: {}", "Failed to open “{}”: {}", e.name, err), true);
         } else {
@@ -1389,6 +1470,17 @@ impl QuokkaApp {
                 if name.contains(['/', '\\']) {
                     return Err(tr!("Имя не может содержать косую черту", "Name cannot contain a slash").into());
                 }
+                if is_remote(old) {
+                    let new = quokka_domain::remote::parent(old).and_then(|d| quokka_domain::remote::join(&d, name)).unwrap_or_default();
+                    // names on a server are case-sensitive
+                    if xfer::exists(&new) {
+                        return Err(trf!("«{name}» уже существует", "“{name}” already exists"));
+                    }
+                    xfer::rename(old, &new).map_err(|e| e.to_string())?;
+                    self.reload_all();
+                    self.ap().select_name(name);
+                    return Ok(());
+                }
                 let new = old.with_file_name(name);
                 let old_name = old.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
                 if new.exists() && old_name != name.to_lowercase() {
@@ -1396,6 +1488,17 @@ impl QuokkaApp {
                 }
                 fs::rename(old, &new).map_err(|e| e.to_string())?;
                 select = name.to_string();
+            }
+            InputKind::MkDir if is_remote(&dir) => {
+                let mut p = dir.clone();
+                for seg in name.split(['/', '\\']).filter(|s| !s.is_empty()) {
+                    p = quokka_domain::remote::join(&p, seg).unwrap_or_default();
+                }
+                if xfer::exists(&p) {
+                    return Err(trf!("«{name}» уже существует", "“{name}” already exists"));
+                }
+                xfer::mkdir_all(&p).map_err(|e| e.to_string())?;
+                select = name.split(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(name).to_string();
             }
             InputKind::MkDir => {
                 let p = dir.join(name);
@@ -1409,11 +1512,16 @@ impl QuokkaApp {
                 if name.contains(['/', '\\']) {
                     return Err(tr!("Имя не может содержать косую черту", "Name cannot contain a slash").into());
                 }
-                fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(dir.join(name))
-                    .map_err(|e| e.to_string())?;
+                if is_remote(&dir) {
+                    let p = quokka_domain::remote::join(&dir, name).unwrap_or_default();
+                    xfer::create_file(&p).map_err(|e| e.to_string())?;
+                } else {
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(dir.join(name))
+                        .map_err(|e| e.to_string())?;
+                }
                 select = name.to_string();
             }
         }
@@ -1442,6 +1550,19 @@ impl QuokkaApp {
         }
         let dirs: Vec<PathBuf> = finished.iter().flat_map(|f| f.spec.touched_dirs()).collect();
         self.reload_dirs(&dirs);
+        for f in &finished {
+            if let (OpSpec::Copy { sources, dest, .. }, Ok(_)) = (&f.spec, &f.result) {
+                for s in sources {
+                    let local = dest.join(quokka_domain::remote::file_name(s).unwrap_or_default());
+                    if let Some(i) = self.open_after.iter().position(|p| *p == local) {
+                        self.open_after.remove(i);
+                        if let Err(err) = fsops::open_external(&local) {
+                            self.toast(err.to_string(), true);
+                        }
+                    }
+                }
+            }
+        }
         for f in finished {
             let error = f.result.is_err() && !f.cancelled;
             let text = if f.cancelled { tr!("Операция отменена", "Operation cancelled").to_string() } else { f.result.unwrap_or_else(|e| e) };
@@ -1768,12 +1889,12 @@ impl QuokkaApp {
                     // on a small screen the list scrolls instead of running off the window
                     egui::ScrollArea::vertical().id_salt("help-scroll").max_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
                         egui::Grid::new("help-grid").num_columns(4).spacing(vec2(10.0, 7.0)).show(ui, |ui| {
-                            let rows: [(&str, &str, &str, &str); 22] = [
+                            let rows: [(&str, &str, &str, &str); 23] = [
                                 ("Ctrl+C", tr!("Копировать в буфер", "Copy to clipboard"), "Ctrl+X", tr!("Вырезать", "Cut")),
                                 ("Ctrl+S", tr!("Выделить по маске", "Select by mask"), "Ctrl+Shift+S", tr!("Снять по маске", "Deselect by mask")),
                                 ("Ctrl+Shift+I", tr!("Инверсия выделения", "Invert selection"), "Ctrl+Shift+P", tr!("Терминал", "Terminal")),
                                 ("Ctrl+V", tr!("Вставить в текущую папку", "Paste into current folder"), "", ""),
-                                ("Alt+Enter", tr!("Размеры папок", "Folder sizes"), "", ""),
+                                ("Alt+Enter", tr!("Размеры папок", "Folder sizes"), "Ctrl+Alt+Enter", tr!("Свойства", "Properties")),
                                 ("F1", tr!("Справка", "Help"), "Tab", tr!("Другая панель", "Other pane")),
                                 ("F2", tr!("Переименовать", "Rename"), "Enter", tr!("Открыть", "Open")),
                                 ("F3", tr!("Просмотр файла", "View file"), "Backspace", tr!("Папка выше", "Parent folder")),
@@ -1790,7 +1911,8 @@ impl QuokkaApp {
                                 ("Alt+F5", tr!("Создать ZIP-архив", "Create ZIP archive"), "Ctrl+D", tr!("В избранное", "To favorites")),
                                 ("Alt+F6", tr!("Распаковать ZIP", "Extract ZIP"), "Ctrl+J", tr!("Очередь операций", "Operation queue")),
                                 ("Ctrl+Z", tr!("Отменить удаление / перемещение", "Undo delete / move"), "Alt+F7", tr!("Поиск файлов", "Find files")),
-                                ("Ctrl+M", tr!("Групповое переименование", "Multi-rename"), "", ""),
+                                ("Ctrl+M", tr!("Групповое переименование", "Multi-rename"), "Ctrl+K", tr!("Подключение к серверу", "Connect to a server")),
+                                ("Ctrl+Shift+E", tr!("Конвертация изображений", "Convert images"), "", ""),
                             ];
                             for (k1, d1, k2, d2) in rows {
                                 kbd(ui, k1);
@@ -1834,6 +1956,7 @@ impl QuokkaApp {
                 let mut op = None;
                 let mut reset = false;
                 let mut edit_columns = None;
+                let mut check_now = false;
                 let looks: Vec<Look> = self.settings.places.clone().iter().map(|pl| place_look(&mut self.icon_cache, ctx, pl)).collect();
                 let screen = ctx.screen_rect();
                 let width = 920.0_f32.min(screen.width() - 60.0);
@@ -1930,6 +2053,12 @@ impl QuokkaApp {
                                             jb_option(ui, &mut st.tray_icon, tr!("Значок в трее", "Tray icon"), tr!("Щелчок по значку показывает окно, правый щелчок — меню с выходом.", "Clicking the icon shows the window, right-clicking opens a menu with Exit."), &q);
                                             jb_option(ui, &mut st.close_to_tray, tr!("Скрывать в трей при закрытии", "Hide to tray on close"), tr!("Крестик окна прячет Quokka в трей, а не завершает работу; фоновые операции продолжаются. Выход — F10 или «Выход» в меню значка. Значок в трее при этом показывается всегда.", "The window’s close button hides Quokka to the tray instead of quitting; background operations continue. Exit — F10 or “Exit” in the icon menu. The tray icon is always shown in this case."), &q);
                                         }
+                                        jb_group(ui, tr!("Обновления", "Updates"));
+                                        jb_option(ui, &mut st.check_updates, tr!("Проверять обновления при запуске", "Check for updates at startup"), tr!("Раз в сутки Quokka спрашивает GitHub о новой версии и предлагает обновиться. Ничего не скачивается без вашего согласия.", "Once a day Quokka asks GitHub for a new version and offers to update. Nothing is downloaded without your consent."), &q);
+                                        if jb_btn(ui, tr!("Проверить сейчас", "Check now"), false).clicked() {
+                                            check_now = true;
+                                        }
+                                        ui.add_space(10.0);
                                         jb_group(ui, tr!("Внешний редактор", "External editor"));
                                         ui.horizontal(|ui| {
                                             ui.label(RichText::new(tr!("Команда (F4):", "Command (F4):")).size(13.5).color(TEXT));
@@ -2050,6 +2179,10 @@ impl QuokkaApp {
                 }
                 if let Some(pane) = edit_columns {
                     self.modal = Modal::Columns(columns::ColumnsDialog::new(pane, self.settings.columns[pane].clone(), true));
+                    return;
+                }
+                if check_now {
+                    self.check_updates_now();
                     return;
                 }
                 if let Some(op) = op {
@@ -2373,8 +2506,13 @@ impl QuokkaApp {
                         self.toast(tr!("Укажите папку назначения", "Specify the destination folder"), true);
                         true
                     } else {
-                        if d.is_relative() {
-                            d = self.ap_ref().path.join(d);
+                        if is_remote(&d) {
+                            d = quokka_domain::remote::normalize(&d).unwrap_or(d);
+                        } else if d.is_relative() {
+                            d = match quokka_domain::remote::join(&self.ap_ref().path, &d.to_string_lossy()) {
+                                Some(r) => r,
+                                None => self.ap_ref().path.join(d),
+                            };
                         }
                         let sources = std::mem::take(sources);
                         let overwrite = *overwrite;
@@ -2442,7 +2580,7 @@ impl QuokkaApp {
                 let mut discard = false;
                 let screen = ctx.screen_rect();
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let sub = if dirty { tr!("Изменён — Ctrl+S, чтобы сохранить", "Modified — Ctrl+S to save").to_string() } else { path.display().to_string() };
+                let sub = if dirty { tr!("Изменён — Ctrl+S, чтобы сохранить", "Modified — Ctrl+S to save").to_string() } else { remote::shown(path) };
                 dialog(ctx, "editor", (screen.width() * 0.8).min(1200.0), |ui| {
                     dialog_header(ui, Glyph::Pencil, if dirty { ORANGE } else { BLUE }, &name, Some(&sub));
                     egui::Frame::none().fill(INPUT_BG).rounding(10.0).inner_margin(Margin::same(10.0)).show(ui, |ui| {
@@ -2484,7 +2622,7 @@ impl QuokkaApp {
                 });
                 let mut keep = true;
                 if save {
-                    match fs::write(&*path, text.as_bytes()) {
+                    match quokka_infra::xfer::write_all(&*path, text.as_bytes()) {
                         Ok(()) => {
                             *original = text.clone();
                             self.toast(trf!("Сохранено: {name}", "Saved: {name}"), false);
@@ -2589,6 +2727,9 @@ impl QuokkaApp {
             }
             Modal::Find(fd) => self.find_ui(ctx, fd, esc, x_close, enter),
             Modal::MultiRename(d) => self.multi_rename_ui(ctx, d, esc, enter),
+            Modal::Connect(d) => self.connect_ui(ctx, d, esc, enter),
+            Modal::Update(d) => self.update_ui(ctx, d, esc),
+            Modal::Convert(d) => self.convert_ui(ctx, d, esc, enter),
             Modal::Message { title, text } => {
                 let mut close = esc || enter;
                 dialog(ctx, "message", 420.0, |ui| {
@@ -2766,6 +2907,7 @@ impl eframe::App for QuokkaApp {
             self.exit_requested = false;
         }
         self.poll_queue(ctx);
+        self.poll_updates();
         let opening = ctx.data(|d| d.get_temp::<OpenFeedback>(open_feedback_id()));
         if let Some(opening) = opening {
             if ctx.input(|i| i.time) - opening.started >= OPEN_FEEDBACK_SECS {
@@ -2816,6 +2958,7 @@ fn restorable(path: &std::path::Path) -> PathBuf {
         return path.to_path_buf();
     }
     if quokka_infra::archive::location(path).is_some() { return path.to_path_buf(); }
+    if is_remote(path) { return PathBuf::new(); }
     path.ancestors().find(|p| p.is_dir()).map(PathBuf::from).unwrap_or_default()
 }
 
@@ -2955,7 +3098,7 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
             if is_cur { semibold(13.0) } else { regular(13.0) },
             if is_cur { TEXT } else { TEXT_SOFT },
         );
-        let resp = resp.on_hover_text(side.tabs[i].path.display().to_string());
+        let resp = resp.on_hover_text(remote::shown(&side.tabs[i].path));
         if n > 1 {
             let cr = Rect::from_center_size(pos2(tr.right() - 14.0, tr.center().y), vec2(18.0, 18.0));
             if strip.contains_rect(cr) {
@@ -3116,7 +3259,9 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
     if cfg!(windows) {
         segs.push((tr!("Этот компьютер", "This PC").into(), PathBuf::new()));
     }
-    if !panel.is_pc() {
+    if let Some(c) = remote::crumbs(&panel.path) {
+        segs.extend(c);
+    } else if !panel.is_pc() {
         let mut anc: Vec<PathBuf> = panel.path.ancestors().map(|a| a.to_path_buf()).collect();
         anc.reverse();
         for a in anc {
@@ -3355,6 +3500,13 @@ fn empty_menu_items(ui: &mut Ui, panel: &mut Panel, out: &mut PaneOut, is_pc: bo
         item(ui, Glyph::Star, tr!("Добавить эту папку в избранное…", "Add this folder to favorites…"), "", true, Action::AddCurrentFavorite);
         item(ui, Glyph::Folder, tr!("Открыть в Проводнике", "Open in Explorer"), "", !is_pc, Action::OpenInExplorer);
         item(ui, Glyph::Pencil, tr!("Ввести путь", "Enter path"), "Ctrl+L", true, Action::EditPath);
+        if remote::is_sftp(&panel.path) {
+            item(ui, Glyph::Terminal, tr!("SSH-терминал", "SSH terminal"), "Ctrl+Shift+P", true, Action::OpenTerminal);
+        }
+        if cfg!(windows) {
+            menu_sep(ui);
+            item(ui, Glyph::Info, tr!("Свойства папки", "Folder properties"), "", !is_pc, Action::FolderProperties);
+        }
     }
 }
 
@@ -3813,6 +3965,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                             (tr!("Копировать в другую панель\tF5", "Copy to other pane\tF5"), Glyph::Copy, Action::Copy),
                             (tr!("Переместить в другую панель\tF6", "Move to other pane\tF6"), Glyph::ArrowRight, Action::Move),
                             (tr!("Добавить в ZIP-архив…\tAlt+F5", "Add to ZIP archive…\tAlt+F5"), Glyph::Archive, Action::Zip),
+                            (tr!("Конвертировать изображения…\tCtrl+Shift+E", "Convert images…\tCtrl+Shift+E"), Glyph::Image, Action::ConvertImages),
                             (fav, Glyph::Star, Action::AddFavorite),
                             (tr!("Удалить в корзину\tDel", "Move to Recycle Bin\tDel"), Glyph::Trash, Action::Delete),
                             (tr!("Удалить навсегда\tShift+Del", "Delete permanently\tShift+Del"), Glyph::Close, Action::DeletePermanent),
@@ -3836,9 +3989,12 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                         if !panel.folder_sizes.pending.is_empty() {
                             items.push((tr!("Отменить расчёт размеров", "Cancel size calculation"), Glyph::Close, Action::CancelSizes));
                         }
+                        if cfg!(windows) {
+                            items.push((tr!("Свойства	Ctrl+Alt+Enter", "Properties	Ctrl+Alt+Enter"), Glyph::Info, Action::Properties));
+                        }
                         // a long menu in a small window scrolls instead of being cut off
                         menu_scroll(ui, |ui| for (label, g, a) in items {
-                            if matches!(a, Action::Zip | Action::Delete | Action::MkDir | Action::Mark) {
+                            if matches!(a, Action::Zip | Action::Delete | Action::MkDir | Action::Mark | Action::Properties) {
                                 menu_sep(ui);
                             }
                             let (name, key) = label.split_once('\t').unwrap_or((label, ""));
@@ -4371,6 +4527,7 @@ fn kind_look(k: OpKind) -> (Glyph, Color32) {
         OpKind::Move => (Glyph::ArrowRight, GREEN),
         OpKind::Delete => (Glyph::Trash, RED),
         OpKind::Archive => (Glyph::Archive, ORANGE),
+        OpKind::Convert => (Glyph::Image, PURPLE),
     }
 }
 
@@ -4679,11 +4836,20 @@ fn load_viewer(path: PathBuf) -> Modal {
 }
 
 fn load_editor(path: PathBuf) -> Modal {
-    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if size > 4 * 1024 * 1024 {
-        return Modal::Message { title: tr!("Файл слишком большой", "File is too large").into(), text: tr!("Встроенный редактор открывает файлы до 4 МБ.", "The built-in editor opens files up to 4 MB.").into() };
-    }
-    match fs::read(&path) {
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let too_big = || Modal::Message { title: tr!("Файл слишком большой", "File is too large").into(), text: tr!("Встроенный редактор открывает файлы до 4 МБ.", "The built-in editor opens files up to 4 MB.").into() };
+    let read = if is_remote(&path) {
+        match quokka_infra::xfer::read_limited(&path, LIMIT as usize + 1) {
+            Ok((_, total)) if total > LIMIT => return too_big(),
+            r => r.map(|(data, _)| data),
+        }
+    } else {
+        if fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > LIMIT {
+            return too_big();
+        }
+        fs::read(&path)
+    };
+    match read {
         Ok(bytes) => {
             if bytes.iter().take(8192).any(|&b| b == 0) {
                 return Modal::Message { title: tr!("Двоичный файл", "Binary file").into(), text: tr!("Это не текстовый файл — откройте его на просмотр (F3).", "This is not a text file — open it for viewing (F3).").into() };

@@ -50,6 +50,13 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed.' }
+          wix extension add --global WixToolset.UI.wixext/5.0.2
+          if ($LASTEXITCODE -ne 0) { throw 'WiX UI extension installation failed.' }
+
       - name: Test, build and package
         env:
           RUST_TARGET: ${{ matrix.target }}
@@ -62,6 +69,7 @@ jobs:
           name: quokka-windows-${{ matrix.arch }}
           path: |
             release/*.zip
+            release/*.msi
             release/*.sha256
           if-no-files-found: error
           retention-days: 14
@@ -89,9 +97,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $archives = @(Get-ChildItem release/*.zip)
+          $installers = @(Get-ChildItem release/*.msi)
           $checksums = @(Get-ChildItem release/*.sha256)
-          if ($archives.Count -ne 2 -or $checksums.Count -ne 2) {
-            throw 'Both Windows packages and checksums are required.'
+          if ($archives.Count -ne 2 -or $installers.Count -ne 2 -or $checksums.Count -ne 4) {
+            throw 'ZIP and MSI packages with checksums are required for both architectures.'
           }
           $isDraft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft 2>$null
           if ($LASTEXITCODE -eq 0) {
@@ -100,9 +109,55 @@ jobs:
             gh release create $env:RELEASE_TAG --verify-tag --draft --title $env:RELEASE_TAG --generate-notes
             if ($LASTEXITCODE -ne 0) { throw 'Failed to create draft release.' }
           }
-          $assets = @($archives.FullName) + @($checksums.FullName)
+          $assets = @($archives.FullName) + @($installers.FullName) + @($checksums.FullName)
           gh release upload $env:RELEASE_TAG @assets --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Failed to upload release assets; release remains a draft.' }
           $prerelease = if ($env:RELEASE_TAG.Contains('-')) { 'true' } else { 'false' }
           gh release edit $env:RELEASE_TAG --draft=false "--prerelease=$prerelease"
           if ($LASTEXITCODE -ne 0) { throw 'Failed to publish release.' }
+
+  winget:
+    name: winget manifests
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    needs: release
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: quokka-windows-*
+          path: release
+          merge-multiple: true
+
+      - name: Generate manifests
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: ./.github/scripts/winget-manifests.ps1 -Version $env:RELEASE_TAG.TrimStart('v') -Repository $env:REPOSITORY
+
+      - name: Upload manifests
+        uses: actions/upload-artifact@v7
+        with:
+          name: winget-manifests
+          path: release/winget
+          if-no-files-found: error
+          retention-days: 30
+
+      # Opens a pull request in microsoft/winget-pkgs. Needs the WINGET_TOKEN secret:
+      # a classic personal access token with the public_repo scope.
+      - name: Submit to winget-pkgs
+        if: env.WINGET_TOKEN != ''
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          $dir = "release/winget/manifests/n/Natterum/QuokkaFileManager/$($env:RELEASE_TAG.TrimStart('v'))"
+          ./wingetcreate.exe submit --token $env:WINGET_TOKEN --prtitle "New version: Natterum.QuokkaFileManager $($env:RELEASE_TAG.TrimStart('v'))" $dir
+          if ($LASTEXITCODE -ne 0) { throw 'winget submission failed.' }
