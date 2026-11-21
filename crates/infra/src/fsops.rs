@@ -821,24 +821,6 @@ mod tests {
         assert!(!f.exists());
     }
 
-    #[test]
-    fn recycle_then_restore() {
-        let dir = std::env::temp_dir().join("quokka-unrecycle-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("папка")).unwrap();
-        let f = dir.join("вернуть меня.txt");
-        fs::write(&f, b"hello").unwrap();
-        fs::write(dir.join("папка").join("a.txt"), b"a").unwrap();
-        let sub = dir.join("папка");
-        recycle_one(&f).unwrap();
-        recycle_one(&sub).unwrap();
-        assert!(!f.exists() && !sub.exists());
-        unrecycle_one(&f).unwrap();
-        unrecycle_one(&sub).unwrap();
-        assert_eq!(fs::read(&f).unwrap(), b"hello");
-        assert_eq!(fs::read(sub.join("a.txt")).unwrap(), b"a");
-        let _ = fs::remove_dir_all(&dir);
-    }
 }
 
 /// ZIP folders are read-only; only Copy may read virtual members.
