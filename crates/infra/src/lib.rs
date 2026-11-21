@@ -6,6 +6,7 @@ pub mod archive;
 pub mod clipboard;
 pub mod fsops;
 pub mod iconsrc;
+pub mod imgconv;
 pub mod rename;
 pub mod search;
 pub mod shell_dnd;

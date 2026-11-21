@@ -14,7 +14,8 @@ fs2 = "0.4"
 flate2 = "1"
 crc32fast = "1"
 notify = "6.1.1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "ico"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "ico", "tiff", "tga", "qoi", "avif"] }
+webp = { version = "0.3", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

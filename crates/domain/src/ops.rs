@@ -2,6 +2,7 @@
 
 use crate::trf;
 use crate::format::items_text;
+use crate::imgconv::ConvertOptions;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -16,6 +17,9 @@ pub enum OpSpec {
     MoveBack { pairs: Vec<(PathBuf, PathBuf)> },
     Zip { sources: Vec<PathBuf>, dest: PathBuf },
     Unzip { archive: PathBuf, dest: PathBuf, overwrite: bool },
+    /// Convert images (folders are searched recursively) into `dest`, keeping the
+    /// folder structure below each selected folder.
+    ConvertImages { sources: Vec<PathBuf>, dest: PathBuf, options: ConvertOptions },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,6 +28,7 @@ pub enum OpKind {
     Move,
     Delete,
     Archive,
+    Convert,
 }
 
 fn what(sources: &[PathBuf]) -> String {
@@ -60,6 +65,9 @@ impl OpSpec {
             }
             OpSpec::Zip { sources, dest } => trf!("Архивация {} в «{}»", "Zipping {} to “{}”", what(sources), file_name(dest)),
             OpSpec::Unzip { archive, dest, .. } => trf!("Распаковка «{}» в «{}»", "Extracting “{}” to “{}”", file_name(archive), folder(dest)),
+            OpSpec::ConvertImages { sources, dest, options } => {
+                trf!("Конвертация {} в {} → «{}»", "Converting {} to {} → “{}”", what(sources), options.describe(), folder(dest))
+            }
         }
     }
 
@@ -70,6 +78,7 @@ impl OpSpec {
             OpSpec::Delete { .. } | OpSpec::Recycle { .. } => OpKind::Delete,
             OpSpec::Restore { .. } | OpSpec::MoveBack { .. } => OpKind::Move,
             OpSpec::Zip { .. } | OpSpec::Unzip { .. } => OpKind::Archive,
+            OpSpec::ConvertImages { .. } => OpKind::Convert,
         }
     }
 
@@ -91,7 +100,7 @@ impl OpSpec {
                 parents(&all)
             }
             OpSpec::Zip { dest, .. } => parents(std::slice::from_ref(dest)),
-            OpSpec::Unzip { dest, .. } => vec![dest.clone()],
+            OpSpec::Unzip { dest, .. } | OpSpec::ConvertImages { dest, .. } => vec![dest.clone()],
         };
         // a destination that did not exist yet is created inside its parent
         let extra: Vec<PathBuf> = out.iter().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();

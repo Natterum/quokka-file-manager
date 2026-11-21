@@ -732,6 +732,7 @@ impl FileOps for StdFileOps {
             OpSpec::MoveBack { pairs } => start_move_back(pairs, waker),
             OpSpec::Zip { sources, dest } => start_zip(sources, dest, waker),
             OpSpec::Unzip { archive, dest, overwrite } => start_unzip(archive, dest, overwrite, waker),
+            OpSpec::ConvertImages { sources, dest, options } => crate::imgconv::start_convert(sources, dest, options, waker),
         }
     }
 }
@@ -828,7 +829,7 @@ pub fn validate_operation(spec: &OpSpec) -> Result<(), String> {
     let readonly = || Err(tr!("Архив открыт только для чтения. F5 — извлечь выбранное в обычную папку.", "Archive is read-only. F5 extracts selected items to a regular folder.").into());
     let (sources, dest, allow_members): (&[PathBuf], Option<&Path>, bool) = match spec {
         OpSpec::Copy { sources, dest, .. } => (sources, Some(dest), true),
-        OpSpec::Move { sources, dest, .. } | OpSpec::Zip { sources, dest } => (sources, Some(dest), false),
+        OpSpec::Move { sources, dest, .. } | OpSpec::Zip { sources, dest } | OpSpec::ConvertImages { sources, dest, .. } => (sources, Some(dest), false),
         OpSpec::Delete { sources } | OpSpec::Recycle { sources } => (sources, None, false),
         OpSpec::Unzip { archive, dest, .. } => (std::slice::from_ref(archive), Some(dest), false),
         _ => return Ok(()),

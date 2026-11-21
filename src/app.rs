@@ -30,6 +30,7 @@ mod menubar;
 mod rename;
 mod preview;
 mod columns;
+mod convert;
 
 const ROW_H: f32 = 28.0;
 const TABS_H: f32 = 34.0;
@@ -166,6 +167,7 @@ pub enum Action {
     CalculateSizes,
     CalculateAllSizes,
     CancelSizes,
+    ConvertImages,
 }
 
 fn fkeys() -> [(Key, &'static str, Action); 12] {
@@ -221,6 +223,7 @@ enum Modal {
     ConfirmQuit,
     Find(Box<find::FindDialog>),
     MultiRename(Box<rename::RenameDialog>),
+    Convert(Box<convert::ConvertDialog>),
 }
 
 /// What Ctrl+Z takes back.
@@ -896,6 +899,7 @@ impl QuokkaApp {
                 (Modifiers::COMMAND | Modifiers::SHIFT, Key::I, Action::InvertSelection),
                 (Modifiers::COMMAND | Modifiers::SHIFT, Key::S, Action::UnselectMask),
                 (Modifiers::COMMAND | Modifiers::SHIFT, Key::P, Action::OpenTerminal),
+                (Modifiers::COMMAND | Modifiers::SHIFT, Key::E, Action::ConvertImages),
                 (Modifiers::ALT, Key::F5, Action::Zip),
                 (Modifiers::ALT, Key::F6, Action::Unzip),
                 (Modifiers::ALT, Key::F7, Action::FindFiles),
@@ -1010,7 +1014,7 @@ impl QuokkaApp {
         if quokka_infra::archive::location(&self.ap_ref().path).is_some() && matches!(a,
             Action::Rename | Action::MultiRename | Action::Move | Action::Delete | Action::DeletePermanent |
             Action::Edit | Action::EditBuiltin | Action::MkDir | Action::NewFile | Action::CreateWindows |
-            Action::ClipboardCut | Action::ClipboardCopy | Action::ClipboardPaste | Action::Zip | Action::Unzip | Action::FindFiles) {
+            Action::ClipboardCut | Action::ClipboardCopy | Action::ClipboardPaste | Action::Zip | Action::Unzip | Action::FindFiles | Action::ConvertImages) {
             self.toast(tr!("Архив открыт только для чтения. F5 — извлечь выбранное.", "Archive is read-only. F5 extracts selected items."), true);
             return;
         }
@@ -1060,6 +1064,7 @@ impl QuokkaApp {
                 None => self.toast(tr!("Нечего отменять", "Nothing to undo"), false),
             },
             Action::MultiRename => self.open_multi_rename(),
+            Action::ConvertImages => self.open_convert(ctx),
             Action::ConfigureColumns(pane) => {
                 self.modal = Modal::Columns(columns::ColumnsDialog::new(pane, self.settings.columns[pane].clone(), false));
             }
@@ -1790,7 +1795,7 @@ impl QuokkaApp {
                                 ("Alt+F5", tr!("Создать ZIP-архив", "Create ZIP archive"), "Ctrl+D", tr!("В избранное", "To favorites")),
                                 ("Alt+F6", tr!("Распаковать ZIP", "Extract ZIP"), "Ctrl+J", tr!("Очередь операций", "Operation queue")),
                                 ("Ctrl+Z", tr!("Отменить удаление / перемещение", "Undo delete / move"), "Alt+F7", tr!("Поиск файлов", "Find files")),
-                                ("Ctrl+M", tr!("Групповое переименование", "Multi-rename"), "", ""),
+                                ("Ctrl+M", tr!("Групповое переименование", "Multi-rename"), "Ctrl+Shift+E", tr!("Конвертация изображений", "Convert images")),
                             ];
                             for (k1, d1, k2, d2) in rows {
                                 kbd(ui, k1);
@@ -2589,6 +2594,7 @@ impl QuokkaApp {
             }
             Modal::Find(fd) => self.find_ui(ctx, fd, esc, x_close, enter),
             Modal::MultiRename(d) => self.multi_rename_ui(ctx, d, esc, enter),
+            Modal::Convert(d) => self.convert_ui(ctx, d, esc, enter),
             Modal::Message { title, text } => {
                 let mut close = esc || enter;
                 dialog(ctx, "message", 420.0, |ui| {
@@ -3813,6 +3819,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                             (tr!("Копировать в другую панель\tF5", "Copy to other pane\tF5"), Glyph::Copy, Action::Copy),
                             (tr!("Переместить в другую панель\tF6", "Move to other pane\tF6"), Glyph::ArrowRight, Action::Move),
                             (tr!("Добавить в ZIP-архив…\tAlt+F5", "Add to ZIP archive…\tAlt+F5"), Glyph::Archive, Action::Zip),
+                            (tr!("Конвертировать изображения…\tCtrl+Shift+E", "Convert images…\tCtrl+Shift+E"), Glyph::Image, Action::ConvertImages),
                             (fav, Glyph::Star, Action::AddFavorite),
                             (tr!("Удалить в корзину\tDel", "Move to Recycle Bin\tDel"), Glyph::Trash, Action::Delete),
                             (tr!("Удалить навсегда\tShift+Del", "Delete permanently\tShift+Del"), Glyph::Close, Action::DeletePermanent),
@@ -4371,6 +4378,7 @@ fn kind_look(k: OpKind) -> (Glyph, Color32) {
         OpKind::Move => (Glyph::ArrowRight, GREEN),
         OpKind::Delete => (Glyph::Trash, RED),
         OpKind::Archive => (Glyph::Archive, ORANGE),
+        OpKind::Convert => (Glyph::Image, PURPLE),
     }
 }
 

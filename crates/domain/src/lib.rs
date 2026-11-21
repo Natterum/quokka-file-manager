@@ -4,6 +4,7 @@
 
 pub mod entry;
 pub mod format;
+pub mod imgconv;
 pub mod kind;
 pub mod lang;
 pub mod ops;
