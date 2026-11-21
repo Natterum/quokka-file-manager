@@ -134,7 +134,12 @@ pub struct ConvertOptions {
     pub overwrite: bool,
     /// Give results the modification time of their sources.
     pub keep_time: bool,
+    /// Added to the name of each result: `photo.png` → `photo_conv.webp`.
+    pub suffix: String,
 }
+
+/// Default for [`ConvertOptions::suffix`].
+pub const DEFAULT_SUFFIX: &str = "_conv";
 
 impl Default for ConvertOptions {
     fn default() -> Self {
@@ -145,6 +150,7 @@ impl Default for ConvertOptions {
             png: PngLevel::Default,
             overwrite: false,
             keep_time: true,
+            suffix: DEFAULT_SUFFIX.to_string(),
         }
     }
 }
@@ -179,15 +185,31 @@ pub fn can_read(path: &Path) -> bool {
         .is_some_and(|e| READABLE.contains(&e.as_str()))
 }
 
-/// Where `src` goes: `dest_dir/<rel parent>/<stem>.<ext>`, where `rel` is the path
-/// of `src` relative to the selected item it was found under (empty for a file that
-/// was selected itself).
-pub fn target_path(src: &Path, rel_dir: &Path, dest_dir: &Path, format: ImageFormat) -> PathBuf {
-    let stem = src.file_stem().map(|s| s.to_os_string()).unwrap_or_default();
-    let mut name = stem;
+/// Name of the result: `<stem><suffix>.<ext>`.
+pub fn target_name(src: &Path, format: ImageFormat, suffix: &str) -> std::ffi::OsString {
+    let mut name = src.file_stem().map(|s| s.to_os_string()).unwrap_or_default();
+    name.push(suffix);
     name.push(".");
     name.push(format.ext());
-    dest_dir.join(rel_dir).join(name)
+    name
+}
+
+/// Where `src` goes. With a destination folder: `dest/<rel>/<name>`, where `rel` is the
+/// folder of `src` relative to the selected item it was found under (empty for a file
+/// that was selected itself). Without one: next to `src`, in the same folder.
+pub fn target_path(src: &Path, rel_dir: &Path, dest: Option<&Path>, format: ImageFormat, suffix: &str) -> PathBuf {
+    let dir = match dest {
+        Some(d) => d.join(rel_dir),
+        None => src.parent().map(Path::to_path_buf).unwrap_or_default(),
+    };
+    dir.join(target_name(src, format, suffix))
+}
+
+/// Whether a file found while walking a folder is itself an earlier result (its stem
+/// ends with `suffix`), so converting a tree in place twice does not produce
+/// `photo_conv_conv.webp`. Files the user selected one by one are always converted.
+pub fn is_previous_result(path: &Path, suffix: &str) -> bool {
+    !suffix.is_empty() && path.file_stem().is_some_and(|s| s.to_string_lossy().ends_with(suffix))
 }
 
 #[cfg(test)]
@@ -196,8 +218,21 @@ mod tests {
 
     #[test]
     fn target_keeps_stem_and_subfolder() {
-        let t = target_path(Path::new("/a/photos/x.y.PNG"), Path::new("photos"), Path::new("/out"), ImageFormat::Webp);
+        let t = target_path(Path::new("/a/photos/x.y.PNG"), Path::new("photos"), Some(Path::new("/out")), ImageFormat::Webp, "");
         assert_eq!(t, PathBuf::from("/out/photos/x.y.webp"));
+    }
+
+    #[test]
+    fn target_next_to_source_with_suffix() {
+        let t = target_path(Path::new("/a/photos/x.png"), Path::new("photos"), None, ImageFormat::Jpeg, DEFAULT_SUFFIX);
+        assert_eq!(t, PathBuf::from("/a/photos/x_conv.jpg"));
+    }
+
+    #[test]
+    fn previous_results_are_recognised() {
+        assert!(is_previous_result(Path::new("/a/x_conv.webp"), "_conv"));
+        assert!(!is_previous_result(Path::new("/a/x.webp"), "_conv"));
+        assert!(!is_previous_result(Path::new("/a/x_conv.webp"), ""));
     }
 
     #[test]

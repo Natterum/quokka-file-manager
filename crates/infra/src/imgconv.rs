@@ -5,7 +5,7 @@
 use quokka_core::job::{Job, Reporter};
 use quokka_core::Waker;
 use quokka_domain::format::items_text;
-use quokka_domain::imgconv::{can_read, target_path, ConvertOptions, ImageFormat, PngLevel};
+use quokka_domain::imgconv::{can_read, is_previous_result, target_path, ConvertOptions, ImageFormat, PngLevel};
 use quokka_domain::{tr, trf};
 use image::codecs::{avif, bmp, gif, ico, jpeg, png, qoi, tga, tiff, webp as iwebp};
 use image::{DynamicImage, ImageDecoder, ImageReader, Rgba, RgbaImage};
@@ -23,10 +23,15 @@ struct Item {
     dst: PathBuf,
 }
 
-/// Images under `sources` (folders recursively) with their targets in `dest`, plus the
-/// number of selected files that are not readable images.
-fn collect(sources: &[PathBuf], dest: &Path, format: ImageFormat) -> (Vec<Item>, usize) {
-    fn walk(dir: &Path, rel: &Path, dest: &Path, format: ImageFormat, out: &mut Vec<Item>) {
+/// Images under `sources` (folders recursively) with their targets (in `dest`, or next
+/// to each source without it), plus the
+/// number of selected files that are not readable images. Stops early once `cancel` is
+/// set: a whole drive can be selected, and its walk must not outlive the dialog.
+fn collect(sources: &[PathBuf], dest: Option<&Path>, o: &ConvertOptions, cancel: &AtomicBool) -> (Vec<Item>, usize) {
+    fn walk(dir: &Path, rel: &Path, dest: Option<&Path>, o: &ConvertOptions, cancel: &AtomicBool, out: &mut Vec<Item>) {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let Ok(rd) = fs::read_dir(dir) else { return };
         let mut entries: Vec<_> = rd.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
@@ -34,9 +39,9 @@ fn collect(sources: &[PathBuf], dest: &Path, format: ImageFormat) -> (Vec<Item>,
             let p = e.path();
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                walk(&p, &rel.join(e.file_name()), dest, format, out);
-            } else if can_read(&p) {
-                out.push(Item { dst: target_path(&p, rel, dest, format), src: p });
+                walk(&p, &rel.join(e.file_name()), dest, o, cancel, out);
+            } else if can_read(&p) && !is_previous_result(&p, &o.suffix) {
+                out.push(Item { dst: target_path(&p, rel, dest, o.format, &o.suffix), src: p });
             }
         }
     }
@@ -45,9 +50,9 @@ fn collect(sources: &[PathBuf], dest: &Path, format: ImageFormat) -> (Vec<Item>,
     for s in sources {
         if s.is_dir() {
             let rel = PathBuf::from(s.file_name().unwrap_or_default());
-            walk(s, &rel, dest, format, &mut items);
+            walk(s, &rel, dest, o, cancel, &mut items);
         } else if can_read(s) {
-            items.push(Item { dst: target_path(s, Path::new(""), dest, format), src: s.clone() });
+            items.push(Item { dst: target_path(s, Path::new(""), dest, o.format, &o.suffix), src: s.clone() });
         } else {
             unsupported += 1;
         }
@@ -190,8 +195,11 @@ fn name_of(p: &Path) -> String {
 }
 
 /// Run the whole batch, reporting progress in files.
-fn run(sources: &[PathBuf], dest: &Path, o: &ConvertOptions, rep: &mut Reporter) -> Result<String, String> {
-    let (items, unsupported) = collect(sources, dest, o.format);
+fn run(sources: &[PathBuf], dest: Option<&Path>, o: &ConvertOptions, rep: &mut Reporter) -> Result<String, String> {
+    let (items, unsupported) = collect(sources, dest, o, &rep.cancel);
+    if rep.cancel.load(Ordering::Relaxed) {
+        return Err(tr!("Отменено", "Cancelled").into());
+    }
     if items.is_empty() {
         return Err(tr!("Среди выбранного нет изображений, которые можно прочитать", "No readable images among the selected items").into());
     }
@@ -258,9 +266,9 @@ fn run(sources: &[PathBuf], dest: &Path, o: &ConvertOptions, rep: &mut Reporter)
     }
 }
 
-pub fn start_convert(sources: Vec<PathBuf>, dest: PathBuf, options: ConvertOptions, waker: Waker) -> Job {
+pub fn start_convert(sources: Vec<PathBuf>, dest: Option<PathBuf>, options: ConvertOptions, waker: Waker) -> Job {
     let title = trf!("Конвертация в {}", "Converting to {}", options.describe());
-    Job::spawn(title, false, waker, move |rep| run(&sources, &dest, &options, rep))
+    Job::spawn(title, false, waker, move |rep| run(&sources, dest.as_deref(), &options, rep))
 }
 
 /// Expected size of the results, from converting a few sample files in memory.
@@ -281,14 +289,14 @@ pub struct Estimate {
 const SAMPLES: usize = 4;
 
 /// Estimate the size of the results: convert up to [`SAMPLES`] files spread over the
-/// selection in memory and scale their size ratio to all the images. `None` if
-/// cancelled or no sample could be converted.
+/// selection in memory and scale their size ratio to all the images. `files == 0` if
+/// there are no images; `None` if cancelled or no sample could be converted.
 pub fn estimate(sources: &[PathBuf], o: &ConvertOptions, cancel: &AtomicBool) -> Option<Estimate> {
-    let (items, _) = collect(sources, Path::new(""), o.format);
+    let (items, _) = collect(sources, None, o, cancel);
     let sizes: Vec<u64> = items.iter().map(|i| fs::metadata(&i.src).map_or(0, |m| m.len())).collect();
     let input_bytes: u64 = sizes.iter().sum();
     if items.is_empty() {
-        return None;
+        return (!cancel.load(Ordering::Relaxed)).then_some(Estimate { files: 0, input_bytes: 0, output_bytes: 0, sampled: 0 });
     }
     let n = items.len().min(SAMPLES);
     let picks: Vec<usize> = (0..n).map(|k| k * items.len() / n).collect();
@@ -344,8 +352,8 @@ mod tests {
         }
     }
 
-    fn run_sync(sources: Vec<PathBuf>, dest: PathBuf, o: ConvertOptions) -> Result<String, String> {
-        let mut job = start_convert(sources, dest, o, Waker::noop());
+    fn run_sync(sources: Vec<PathBuf>, dest: impl Into<Option<PathBuf>>, o: ConvertOptions) -> Result<String, String> {
+        let mut job = start_convert(sources, dest.into(), o, Waker::noop());
         for _ in 0..3000 {
             job.poll();
             if let Some(r) = job.finished.take() {
@@ -370,7 +378,7 @@ mod tests {
                 let o = ConvertOptions { format: f, quality: 70, lossless, ..Default::default() };
                 let r = run_sync(vec![src.clone()], out.clone(), o);
                 assert!(r.is_ok(), "{f:?}: {r:?}");
-                let target = out.join(format!("pic.{}", f.ext()));
+                let target = out.join(format!("pic_conv.{}", f.ext()));
                 assert!(target.is_file(), "{f:?}");
                 // AVIF decoding needs dav1d, which is not built in
                 if f != ImageFormat::Avif {
@@ -390,10 +398,10 @@ mod tests {
         let size = |q: u8, dir: &str| {
             let out = d.join(dir);
             run_sync(vec![src.clone()], out.clone(), ConvertOptions { format: ImageFormat::Jpeg, quality: q, ..Default::default() }).unwrap();
-            fs::metadata(out.join("a.jpg")).unwrap().len()
+            fs::metadata(out.join("a_conv.jpg")).unwrap().len()
         };
         assert!(size(10, "low") < size(95, "high"));
-        let px = image::open(d.join("high/a.jpg")).unwrap().to_rgb8().get_pixel(2, 2).0;
+        let px = image::open(d.join("high/a_conv.jpg")).unwrap().to_rgb8().get_pixel(2, 2).0;
         assert!(px.iter().all(|&c| c > 240), "transparent area should be white: {px:?}");
         let _ = fs::remove_dir_all(&d);
     }
@@ -409,14 +417,14 @@ mod tests {
         fs::write(root.join("broken.jpg"), "not a jpeg").unwrap();
         let out = d.join("out");
         fs::create_dir_all(out.join("photos")).unwrap();
-        fs::write(out.join("photos/a.webp"), "keep me").unwrap();
+        fs::write(out.join("photos/a_conv.webp"), "keep me").unwrap();
 
         let r = run_sync(vec![root.clone()], out.clone(), ConvertOptions::default());
         let err = r.unwrap_err();
         assert!(err.contains("broken.jpg"), "{err}");
-        assert!(out.join("photos/2024/b.webp").is_file());
-        assert_eq!(fs::read_to_string(out.join("photos/a.webp")).unwrap(), "keep me");
-        assert!(!out.join("photos/notes.webp").exists());
+        assert!(out.join("photos/2024/b_conv.webp").is_file());
+        assert_eq!(fs::read_to_string(out.join("photos/a_conv.webp")).unwrap(), "keep me");
+        assert!(!out.join("photos/notes_conv.webp").exists());
         // no temporary files left behind
         assert!(!fs::read_dir(out.join("photos")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".quokka-tmp")));
         let _ = fs::remove_dir_all(&d);
@@ -428,7 +436,7 @@ mod tests {
         let src = d.join("x.jpg");
         RgbImage::from_fn(200, 200, |x, y| Rgb([(x ^ y) as u8, x as u8, y as u8])).save(&src).unwrap();
         let before = fs::metadata(&src).unwrap().len();
-        let o = ConvertOptions { format: ImageFormat::Jpeg, quality: 5, overwrite: true, ..Default::default() };
+        let o = ConvertOptions { format: ImageFormat::Jpeg, quality: 5, overwrite: true, suffix: String::new(), ..Default::default() };
         run_sync(vec![src.clone()], d.clone(), o).unwrap();
         assert!(fs::metadata(&src).unwrap().len() < before);
         let _ = fs::remove_dir_all(&d);
@@ -447,6 +455,52 @@ mod tests {
         assert!(low.output_bytes < high.output_bytes && high.output_bytes < low.input_bytes);
         cancel.store(true, Ordering::Relaxed);
         assert!(estimate(&[d.clone()], &ConvertOptions::default(), &cancel).is_none());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Manual check against real files: `QUOKKA_EST_DIR=<folder> cargo test -p quokka-infra estimate_vs_real -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn estimate_vs_real() {
+        let dir = PathBuf::from(std::env::var("QUOKKA_EST_DIR").unwrap());
+        let o = ConvertOptions::default();
+        let files: Vec<PathBuf> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_file() && can_read(p)).collect();
+        let e = estimate(&files, &o, &AtomicBool::new(false)).unwrap();
+        let out = tmpdir("est-real");
+        run_sync(files, out.clone(), o).unwrap();
+        fn total(p: &Path) -> u64 {
+            fs::read_dir(p).unwrap().flatten().map(|e| if e.path().is_dir() { total(&e.path()) } else { e.metadata().unwrap().len() }).sum()
+        }
+        println!("estimate {:?}, real {}", e, total(&out));
+        let _ = fs::remove_dir_all(&out);
+    }
+
+    #[test]
+    fn collect_stops_when_cancelled() {
+        let d = tmpdir("cancel");
+        sample(&d.join("a.png"), false);
+        let cancel = AtomicBool::new(true);
+        assert!(collect(&[d.clone()], None, &ConvertOptions::default(), &cancel).0.is_empty());
+        cancel.store(false, Ordering::Relaxed);
+        assert_eq!(collect(&[d.clone()], None, &ConvertOptions::default(), &cancel).0.len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn next_to_sources_by_default_and_rerun_skips_results() {
+        let d = tmpdir("beside");
+        fs::create_dir_all(d.join("sub")).unwrap();
+        sample(&d.join("a.png"), false);
+        sample(&d.join("sub/b.png"), false);
+        let o = ConvertOptions { format: ImageFormat::Jpeg, ..Default::default() };
+        run_sync(vec![d.clone()], None, o.clone()).unwrap();
+        assert!(d.join("a_conv.jpg").is_file());
+        assert!(d.join("sub/b_conv.jpg").is_file());
+        // the second run sees a_conv.jpg in the tree but does not make a_conv_conv.jpg
+        let o = ConvertOptions { overwrite: true, ..o };
+        assert_eq!(collect(&[d.clone()], None, &o, &AtomicBool::new(false)).0.len(), 2);
+        run_sync(vec![d.clone()], None, o).unwrap();
+        assert!(!d.join("a_conv_conv.jpg").exists());
         let _ = fs::remove_dir_all(&d);
     }
 

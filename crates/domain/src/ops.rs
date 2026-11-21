@@ -17,9 +17,10 @@ pub enum OpSpec {
     MoveBack { pairs: Vec<(PathBuf, PathBuf)> },
     Zip { sources: Vec<PathBuf>, dest: PathBuf },
     Unzip { archive: PathBuf, dest: PathBuf, overwrite: bool },
-    /// Convert images (folders are searched recursively) into `dest`, keeping the
-    /// folder structure below each selected folder.
-    ConvertImages { sources: Vec<PathBuf>, dest: PathBuf, options: ConvertOptions },
+    /// Convert images (folders are searched recursively). With `dest` the results go
+    /// there, keeping the folder structure below each selected folder; without it each
+    /// result is written next to its source.
+    ConvertImages { sources: Vec<PathBuf>, dest: Option<PathBuf>, options: ConvertOptions },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -65,8 +66,11 @@ impl OpSpec {
             }
             OpSpec::Zip { sources, dest } => trf!("Архивация {} в «{}»", "Zipping {} to “{}”", what(sources), file_name(dest)),
             OpSpec::Unzip { archive, dest, .. } => trf!("Распаковка «{}» в «{}»", "Extracting “{}” to “{}”", file_name(archive), folder(dest)),
-            OpSpec::ConvertImages { sources, dest, options } => {
+            OpSpec::ConvertImages { sources, dest: Some(dest), options } => {
                 trf!("Конвертация {} в {} → «{}»", "Converting {} to {} → “{}”", what(sources), options.describe(), folder(dest))
+            }
+            OpSpec::ConvertImages { sources, dest: None, options } => {
+                trf!("Конвертация {} в {}", "Converting {} to {}", what(sources), options.describe())
             }
         }
     }
@@ -100,7 +104,13 @@ impl OpSpec {
                 parents(&all)
             }
             OpSpec::Zip { dest, .. } => parents(std::slice::from_ref(dest)),
-            OpSpec::Unzip { dest, .. } | OpSpec::ConvertImages { dest, .. } => vec![dest.clone()],
+            OpSpec::Unzip { dest, .. } | OpSpec::ConvertImages { dest: Some(dest), .. } => vec![dest.clone()],
+            // results land next to the files, inside the selected folders and their subfolders
+            OpSpec::ConvertImages { sources, dest: None, .. } => {
+                let mut v = parents(sources);
+                v.extend(sources.iter().filter(|s| s.is_dir()).cloned());
+                v
+            }
         };
         // a destination that did not exist yet is created inside its parent
         let extra: Vec<PathBuf> = out.iter().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();

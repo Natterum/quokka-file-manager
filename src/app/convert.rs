@@ -1,4 +1,5 @@
-//! «Конвертация изображений» (Ctrl+Shift+E): target format, quality and destination
+//! «Конвертация изображений» (Ctrl+Shift+E): target format, quality, where the results
+//! go (next to the originals with a name suffix, or into a folder)
 //! for the marked images and folders, with an estimate of the resulting size that is
 //! recomputed in the background whenever the settings change. The rules live in
 //! `quokka_domain::imgconv`, the conversion in `quokka_infra::imgconv`.
@@ -6,7 +7,7 @@
 use quokka_domain::{tr, trf};
 use super::*;
 use quokka_domain::format::format_size;
-use quokka_domain::imgconv::{can_read, ConvertOptions, ImageFormat, PngLevel};
+use quokka_domain::imgconv::{can_read, target_name, ConvertOptions, ImageFormat, PngLevel};
 use quokka_infra::imgconv::{estimate, Estimate};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -31,6 +32,11 @@ struct EstimateRun {
 pub(super) struct ConvertDialog {
     sources: Vec<PathBuf>,
     dest: String,
+    /// Write the results to `dest` instead of next to each original.
+    to_folder: bool,
+    was_to_folder: bool,
+    /// Focus the folder field on the frame it appears.
+    focus_dest: bool,
     opts: ConvertOptions,
     first: bool,
     /// Latest finished estimate and the settings it was made for.
@@ -92,6 +98,9 @@ impl ConvertDialog {
     fn estimate_text(&self) -> (String, Color32) {
         let key = size_key(&self.opts);
         match &self.estimate {
+            Some((_, Some(e))) if e.files == 0 => {
+                (tr!("В выбранном нет изображений", "No images in the selection").into(), ORANGE)
+            }
             Some((k, Some(e))) => {
                 let mut s = trf!("≈ {} вместо {}", "≈ {} instead of {}", format_size(e.output_bytes), format_size(e.input_bytes));
                 if e.input_bytes > 0 {
@@ -109,6 +118,9 @@ impl ConvertDialog {
 
     fn estimate_note(&self) -> Option<String> {
         let (_, Some(e)) = self.estimate.as_ref()? else { return None };
+        if e.files == 0 {
+            return None;
+        }
         Some(if e.sampled < e.files {
             trf!("{} · оценка по {} из них", "{} · estimated from {} of them", items_text(e.files as u64), e.sampled)
         } else {
@@ -147,12 +159,16 @@ impl QuokkaApp {
             return;
         }
         let opts = ctx.data(|d| d.get_temp::<ConvertOptions>(Id::new("convert-opts"))).unwrap_or_default();
-        // like F5: results go to the other panel
+        // by default the results go next to the originals; «В папку» offers the other panel, like F5
+        let to_folder = ctx.data(|d| d.get_temp::<bool>(Id::new("convert-to-folder"))).unwrap_or(false);
         let dest = self.dest_dir().display().to_string();
         let key = size_key(&opts);
         self.modal = Modal::Convert(Box::new(ConvertDialog {
             sources,
             dest,
+            to_folder,
+            was_to_folder: to_folder,
+            focus_dest: false,
             opts,
             first: true,
             estimate: None,
@@ -243,15 +259,43 @@ impl QuokkaApp {
                 }
             });
 
-            // ── destination
-            section(ui, tr!("Папка назначения", "Destination folder"));
-            let r = ui.add(egui::TextEdit::singleline(&mut d.dest).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)).font(regular(15.0)));
-            if d.first {
-                d.first = false;
-                r.request_focus();
+            // ── where the results go
+            section(ui, tr!("Куда сохранять", "Save to"));
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut d.to_folder, false, tr!("Рядом с исходными", "Next to the originals"));
+                ui.radio_value(&mut d.to_folder, true, tr!("В папку", "To folder"));
+            });
+            if d.to_folder {
+                let r = ui.add(egui::TextEdit::singleline(&mut d.dest).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)).font(regular(15.0)));
+                if std::mem::take(&mut d.focus_dest) {
+                    r.request_focus();
+                }
+                if r.lost_focus() && enter {
+                    submit = true;
+                }
             }
-            if r.lost_focus() && enter {
-                submit = true;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr!("Добавить к имени", "Add to name")).size(13.0).color(TEXT_SOFT));
+                let r = ui.add(egui::TextEdit::singleline(&mut d.opts.suffix).desired_width(140.0).margin(vec2(8.0, 6.0)).font(mono(14.0)));
+                if d.first {
+                    d.first = false;
+                    r.request_focus();
+                }
+                if r.lost_focus() && enter {
+                    submit = true;
+                }
+                let example = d.sources.iter().find(|p| p.is_file()).cloned().unwrap_or_else(|| PathBuf::from(tr!("фото.jpg", "photo.jpg")));
+                let name = target_name(&example, d.opts.format, &d.opts.suffix);
+                let from = example.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                ui.label(RichText::new(format!("{from} → {}", name.to_string_lossy())).size(12.5).color(MUTED));
+            });
+            if !d.to_folder && d.opts.suffix.is_empty() {
+                let warn = if d.opts.overwrite {
+                    tr!("Без суффикса файлы того же формата заменят исходные", "Without a suffix, files of the same format replace the originals")
+                } else {
+                    tr!("Без суффикса файлы того же формата будут пропущены", "Without a suffix, files of the same format are skipped")
+                };
+                ui.label(RichText::new(warn).size(12.5).color(ORANGE));
             }
             ui.checkbox(&mut d.opts.overwrite, tr!("Заменять существующие файлы", "Overwrite existing files"));
             ui.checkbox(&mut d.opts.keep_time, tr!("Сохранять дату изменения", "Keep date modified"));
@@ -265,12 +309,27 @@ impl QuokkaApp {
                 }
             });
         });
-        ctx.data_mut(|m| m.insert_temp(Id::new("convert-opts"), d.opts.clone()));
+        if d.to_folder != d.was_to_folder {
+            d.was_to_folder = d.to_folder;
+            d.focus_dest = d.to_folder;
+        }
+        ctx.data_mut(|m| {
+            m.insert_temp(Id::new("convert-opts"), d.opts.clone());
+            m.insert_temp(Id::new("convert-to-folder"), d.to_folder);
+        });
         if cancel {
             return false;
         }
         if !submit {
             return true;
+        }
+        if d.opts.suffix.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
+            self.toast(tr!("Недопустимый символ в добавке к имени", "Invalid character in the name suffix"), true);
+            return true;
+        }
+        if !d.to_folder {
+            self.enqueue(OpSpec::ConvertImages { sources: std::mem::take(&mut d.sources), dest: None, options: d.opts.clone() });
+            return false;
         }
         let mut dest = PathBuf::from(d.dest.trim());
         if dest.as_os_str().is_empty() {
@@ -284,7 +343,7 @@ impl QuokkaApp {
             self.toast(tr!("Назначение должно быть папкой", "The destination must be a folder"), true);
             return true;
         }
-        self.enqueue(OpSpec::ConvertImages { sources: std::mem::take(&mut d.sources), dest, options: d.opts.clone() });
+        self.enqueue(OpSpec::ConvertImages { sources: std::mem::take(&mut d.sources), dest: Some(dest), options: d.opts.clone() });
         false
     }
 }
