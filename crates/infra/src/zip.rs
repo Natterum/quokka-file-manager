@@ -1,6 +1,7 @@
 //! Minimal streaming ZIP writer (deflate, UTF-8 names). Header sizes are patched
 //! in place after each entry is compressed, so files never sit fully in memory.
 
+use quokka_domain::{tr, trf};
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::time::SystemTime;
@@ -26,7 +27,7 @@ const FLAG_UTF8: u16 = 1 << 11;
 const LIMIT: u64 = u32::MAX as u64;
 
 fn too_big() -> io::Error {
-    io::Error::new(io::ErrorKind::Other, "архив больше 4 ГБ не поддерживается")
+    io::Error::new(io::ErrorKind::Other, tr!("архив больше 4 ГБ не поддерживается", "archives larger than 4 GB are not supported"))
 }
 
 fn dos_time(t: Option<SystemTime>) -> (u16, u16) {
@@ -156,7 +157,7 @@ impl ZipWriter {
 
     pub fn finish(mut self) -> io::Result<()> {
         if self.entries.len() > u16::MAX as usize {
-            return Err(io::Error::new(io::ErrorKind::Other, "слишком много файлов для ZIP (больше 65535)"));
+            return Err(io::Error::new(io::ErrorKind::Other, tr!("слишком много файлов для ZIP (больше 65535)", "too many files for ZIP (more than 65535)")));
         }
         let cd_start = self.pos()?;
         let entries = std::mem::take(&mut self.entries);
@@ -220,12 +221,18 @@ impl ReadEntry {
     /// Relative path to extract to, or `None` when the name is unsafe
     /// (absolute, a drive prefix or `..` that would escape the destination).
     pub fn safe_path(&self) -> Option<std::path::PathBuf> {
+        if self.name.starts_with(['/', '\\']) { return None; }
         let mut out = std::path::PathBuf::new();
         for part in self.name.split(['/', '\\']) {
             match part {
                 "" | "." => continue,
                 ".." => return None,
-                p if p.contains(':') => return None,
+                p if p.contains([':', '\0']) || p.ends_with(['.', ' ']) => return None,
+                p if {
+                    let base = p.split('.').next().unwrap_or("").to_ascii_uppercase();
+                    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL") ||
+                        (base.len() == 4 && (base.starts_with("COM") || base.starts_with("LPT")) && matches!(base.as_bytes()[3], b'1'..=b'9'))
+                } => return None,
                 p => out.push(p),
             }
         }
@@ -288,7 +295,7 @@ impl ZipReader {
         let mut file = File::open(path)?;
         let len = file.metadata()?.len();
         if len < 22 {
-            return Err(bad("это не ZIP-архив"));
+            return Err(bad(tr!("это не ZIP-архив", "this is not a ZIP archive")));
         }
         // the end-of-central-directory record sits in the last 22 + 65535 (comment) bytes
         let tail_len = len.min(22 + 65535);
@@ -298,15 +305,15 @@ impl ZipReader {
         let eocd = (0..=tail.len() - 22)
             .rev()
             .find(|&i| u32_at(&tail, i) == 0x0605_4b50)
-            .ok_or_else(|| bad("это не ZIP-архив"))?;
+            .ok_or_else(|| bad(tr!("это не ZIP-архив", "this is not a ZIP archive")))?;
         let count = u16_at(&tail, eocd + 10) as usize;
         let cd_size = u32_at(&tail, eocd + 12) as u64;
         let cd_start = u32_at(&tail, eocd + 16) as u64;
         if count == 0xFFFF || cd_start == 0xFFFF_FFFF {
-            return Err(bad("архивы ZIP64 (больше 4 ГБ) пока не поддерживаются"));
+            return Err(bad(tr!("архивы ZIP64 (больше 4 ГБ) пока не поддерживаются", "ZIP64 archives (larger than 4 GB) are not supported yet")));
         }
         if cd_start + cd_size > len {
-            return Err(bad("архив повреждён"));
+            return Err(bad(tr!("архив повреждён", "archive is corrupted")));
         }
         file.seek(SeekFrom::Start(cd_start))?;
         let mut cd = vec![0u8; cd_size as usize];
@@ -320,14 +327,14 @@ impl ZipReader {
             let x = u16_at(&cd, i + 30) as usize;
             let c = u16_at(&cd, i + 32) as usize;
             if i + 46 + n > cd.len() {
-                return Err(bad("архив повреждён"));
+                return Err(bad(tr!("архив повреждён", "archive is corrupted")));
             }
             let name = decode_name(&cd[i + 46..i + 46 + n], flags & FLAG_UTF8 != 0);
             let csize = u32_at(&cd, i + 20) as u64;
             let size = u32_at(&cd, i + 24) as u64;
             let offset = u32_at(&cd, i + 42) as u64;
             if csize == 0xFFFF_FFFF || size == 0xFFFF_FFFF || offset == 0xFFFF_FFFF {
-                return Err(bad("архивы ZIP64 (больше 4 ГБ) пока не поддерживаются"));
+                return Err(bad(tr!("архивы ZIP64 (больше 4 ГБ) пока не поддерживаются", "ZIP64 archives (larger than 4 GB) are not supported yet")));
             }
             let attrs = u32_at(&cd, i + 38);
             entries.push(ReadEntry {
@@ -357,13 +364,13 @@ impl ZipReader {
     ) -> io::Result<()> {
         let e = &self.entries[idx];
         if e.encrypted {
-            return Err(bad("файл зашифрован паролем"));
+            return Err(bad(tr!("файл зашифрован паролем", "file is password-protected")));
         }
         let mut lh = [0u8; 30];
         self.file.seek(SeekFrom::Start(e.offset))?;
         self.file.read_exact(&mut lh)?;
         if u32_at(&lh, 0) != 0x0403_4b50 {
-            return Err(bad("архив повреждён"));
+            return Err(bad(tr!("архив повреждён", "archive is corrupted")));
         }
         let data = e.offset + 30 + u16_at(&lh, 26) as u64 + u16_at(&lh, 28) as u64;
         self.file.seek(SeekFrom::Start(data))?;
@@ -371,7 +378,7 @@ impl ZipReader {
         let mut src: Box<dyn Read + '_> = match e.method {
             0 => Box::new(raw),
             8 => Box::new(flate2::read::DeflateDecoder::new(io::BufReader::new(raw))),
-            m => return Err(bad(&format!("неподдерживаемый метод сжатия ({m})"))),
+            m => return Err(bad(&trf!("неподдерживаемый метод сжатия ({m})", "unsupported compression method ({m})"))),
         };
         let mut hasher = crc32fast::Hasher::new();
         let mut buf = vec![0u8; 256 * 1024];
@@ -385,7 +392,7 @@ impl ZipReader {
             progress(n as u64)?;
         }
         if hasher.finalize() != e.crc {
-            return Err(bad("контрольная сумма не совпадает — архив повреждён"));
+            return Err(bad(tr!("контрольная сумма не совпадает — архив повреждён", "checksum mismatch — archive is corrupted")));
         }
         Ok(())
     }

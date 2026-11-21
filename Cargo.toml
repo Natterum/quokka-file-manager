@@ -1,3 +1,11 @@
+[workspace]
+members = ["crates/domain", "crates/core", "crates/infra"]
+resolver = "2"
+
+[workspace.dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+regex = "1"
+
 [package]
 name = "quokka-file-manager"
 version = "0.1.0"
@@ -9,15 +17,19 @@ name = "quokka"
 path = "src/main.rs"
 
 [dependencies]
+quokka-domain = { path = "crates/domain" }
+quokka-core = { path = "crates/core" }
+quokka-infra = { path = "crates/infra" }
 eframe = "0.29"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-fs2 = "0.4"
+chrono = { workspace = true }
 resvg = { version = "0.44", default-features = false }
-regex = "1"
-flate2 = "1"
-crc32fast = "1"
 raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "ico"] }
+
+[build-dependencies]
+resvg = { version = "0.44", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3
@@ -38,4 +50,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Memory",
     "Win32_UI_Shell_Common",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Globalization",
 ] }

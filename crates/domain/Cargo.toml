@@ -1,0 +1,9 @@
+[package]
+name = "quokka-domain"
+version = "0.1.0"
+edition = "2021"
+description = "Quokka domain model: entries, sorting and filtering, path rules, operation specs. No I/O, no UI."
+
+[dependencies]
+chrono = { workspace = true }
+regex = { workspace = true }

@@ -23,9 +23,10 @@ pub const GREEN: Color32 = Color32::from_rgb(52, 186, 120);
 pub const SLATE: Color32 = Color32::from_rgb(100, 116, 139);
 pub const GRAY: Color32 = Color32::from_rgb(160, 168, 184);
 
-/// Shared horizontal inset for button labels and menu items.
-pub const BUTTON_PADDING_X: f32 = 32.0;
-pub const BUTTON_PADDING_Y: f32 = 10.0;
+/// Default button padding, the same as «Готово» in the settings (see `sized_btn`),
+/// so plain egui buttons, combo boxes and toggles match the dialog buttons.
+pub const BUTTON_PADDING_X: f32 = 16.0;
+pub const BUTTON_PADDING_Y: f32 = 4.0;
 
 pub const FOLDER_BACK: Color32 = Color32::from_rgb(247, 182, 58);
 pub const FOLDER_FRONT: Color32 = Color32::from_rgb(255, 210, 106);
@@ -158,6 +159,30 @@ pub fn apply(ctx: &egui::Context) {
     // Keep Quokka's appearance and spacing in both theme slots.
     ctx.set_style_of(egui::Theme::Light, style.clone());
     ctx.set_style_of(egui::Theme::Dark, style);
+    ctx.options_mut(apply_click_tolerance);
+}
+
+/// egui's click defaults (0.3 s between clicks, 6 pt of travel) are stricter than
+/// Windows, so a double click with a slight hand tremor or a relaxed pace is lost.
+/// Use the system double-click time and allow a little more travel.
+fn apply_click_tolerance(options: &mut egui::Options) {
+    let input = &mut options.input_options;
+    input.max_click_dist = input.max_click_dist.max(MAX_CLICK_DIST);
+    input.max_double_click_delay = system_double_click_secs().unwrap_or(0.5);
+}
+
+const MAX_CLICK_DIST: f32 = 10.0;
+
+#[cfg(windows)]
+fn system_double_click_secs() -> Option<f64> {
+    // SAFETY: no arguments, reads a per-user system setting.
+    let ms = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
+    (ms > 0).then(|| (ms as f64 / 1000.0).clamp(0.2, 1.5))
+}
+
+#[cfg(not(windows))]
+fn system_double_click_secs() -> Option<f64> {
+    None
 }
 
 #[cfg(test)]

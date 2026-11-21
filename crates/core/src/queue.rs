@@ -2,90 +2,13 @@
 //! added; pending tasks can be reordered or removed, failed ones retried.
 //!
 //! To add a new kind of operation: add a variant to `OpSpec`, give it a title and
-//! a `start` arm that returns an `fsops::Job` — the queue and its UI need no changes.
+//! an arm in the `FileOps` adapter that runs it — the queue and its UI need no changes.
 
-use crate::fsops::{self, Job};
-use crate::util::items_text;
-use eframe::egui;
-use std::path::{Path, PathBuf};
+use crate::job::Job;
+use crate::ports::FileOps;
+use crate::Waker;
+pub use quokka_domain::{OpKind, OpSpec};
 use std::sync::atomic::Ordering;
-
-#[derive(Clone, Debug)]
-pub enum OpSpec {
-    Copy { sources: Vec<PathBuf>, dest: PathBuf, overwrite: bool },
-    Move { sources: Vec<PathBuf>, dest: PathBuf, overwrite: bool },
-    Delete { sources: Vec<PathBuf> },
-    Recycle { sources: Vec<PathBuf> },
-    /// Restore items sent to the Recycle Bin (by their original paths).
-    Restore { originals: Vec<PathBuf> },
-    Zip { sources: Vec<PathBuf>, dest: PathBuf },
-    Unzip { archive: PathBuf, dest: PathBuf, overwrite: bool },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum OpKind {
-    Copy,
-    Move,
-    Delete,
-    Archive,
-}
-
-fn what(sources: &[PathBuf]) -> String {
-    match sources {
-        [one] => format!("«{}»", file_name(one)),
-        _ => items_text(sources.len() as u64),
-    }
-}
-
-fn file_name(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
-}
-
-fn folder(p: &Path) -> String {
-    let s = file_name(p);
-    if s.is_empty() {
-        p.display().to_string()
-    } else {
-        s
-    }
-}
-
-impl OpSpec {
-    pub fn title(&self) -> String {
-        match self {
-            OpSpec::Copy { sources, dest, .. } => format!("Копирование {} в «{}»", what(sources), folder(dest)),
-            OpSpec::Move { sources, dest, .. } => format!("Перемещение {} в «{}»", what(sources), folder(dest)),
-            OpSpec::Delete { sources } => format!("Удаление {}", what(sources)),
-            OpSpec::Recycle { sources } => format!("В корзину: {}", what(sources)),
-            OpSpec::Restore { originals } => format!("Восстановление {} из корзины", what(originals)),
-            OpSpec::Zip { sources, dest } => format!("Архивация {} в «{}»", what(sources), file_name(dest)),
-            OpSpec::Unzip { archive, dest, .. } => format!("Распаковка «{}» в «{}»", file_name(archive), folder(dest)),
-        }
-    }
-
-    pub fn kind(&self) -> OpKind {
-        match self {
-            OpSpec::Copy { .. } => OpKind::Copy,
-            OpSpec::Move { .. } => OpKind::Move,
-            OpSpec::Delete { .. } | OpSpec::Recycle { .. } => OpKind::Delete,
-            OpSpec::Restore { .. } => OpKind::Move,
-            OpSpec::Zip { .. } | OpSpec::Unzip { .. } => OpKind::Archive,
-        }
-    }
-
-    fn start(&self, ctx: &egui::Context) -> Job {
-        let ctx = ctx.clone();
-        match self.clone() {
-            OpSpec::Copy { sources, dest, overwrite } => fsops::start_copy(sources, dest, overwrite, ctx),
-            OpSpec::Move { sources, dest, overwrite } => fsops::start_move(sources, dest, overwrite, ctx),
-            OpSpec::Delete { sources } => fsops::start_delete(sources, ctx),
-            OpSpec::Recycle { sources } => fsops::start_recycle(sources, ctx),
-            OpSpec::Restore { originals } => fsops::start_unrecycle(originals, ctx),
-            OpSpec::Zip { sources, dest } => fsops::start_zip(sources, dest, ctx),
-            OpSpec::Unzip { archive, dest, overwrite } => fsops::start_unzip(archive, dest, overwrite, ctx),
-        }
-    }
-}
 
 pub enum State {
     Pending,
@@ -113,6 +36,8 @@ pub struct Finished {
     pub spec: OpSpec,
     pub result: Result<String, String>,
     pub cancelled: bool,
+    /// `(from, to)` of the items a move put elsewhere (empty for other operations).
+    pub moved: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 #[derive(Default)]
@@ -149,23 +74,24 @@ impl Queue {
     }
 
     /// Collect progress, finish the running task and start the next pending one.
-    pub fn poll(&mut self, ctx: &egui::Context) -> Vec<Finished> {
+    pub fn poll(&mut self, ops: &dyn FileOps, waker: &Waker) -> Vec<Finished> {
         let mut out = Vec::new();
         for t in &mut self.tasks {
             let State::Running(job) = &mut t.state else { continue };
             job.poll();
             let Some(res) = job.finished.take() else { continue };
             let cancelled = job.cancel.load(Ordering::Relaxed) && res.is_err();
+            let moved = std::mem::take(&mut job.moved);
             t.state = match (&res, cancelled) {
                 (_, true) => State::Cancelled,
                 (Ok(m), _) => State::Done(m.clone()),
                 (Err(e), _) => State::Failed(e.clone()),
             };
-            out.push(Finished { spec: t.spec.clone(), result: res, cancelled });
+            out.push(Finished { spec: t.spec.clone(), result: res, cancelled, moved });
         }
         if !self.paused && self.running().is_none() {
             if let Some(t) = self.tasks.iter_mut().find(|t| matches!(t.state, State::Pending)) {
-                t.state = State::Running(t.spec.start(ctx));
+                t.state = State::Running(ops.start(&t.spec, waker.clone()));
             }
         }
         out
@@ -221,11 +147,13 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::FakeOps;
+    use std::path::PathBuf;
 
-    fn wait(q: &mut Queue, ctx: &egui::Context) -> Vec<Finished> {
+    fn wait(q: &mut Queue, ops: &FakeOps) -> Vec<Finished> {
         let mut all = Vec::new();
         for _ in 0..500 {
-            all.extend(q.poll(ctx));
+            all.extend(q.poll(ops, &Waker::noop()));
             if !q.is_active() {
                 break;
             }
@@ -236,23 +164,20 @@ mod tests {
 
     #[test]
     fn runs_tasks_in_order() {
-        let ctx = egui::Context::default();
-        let dir = std::env::temp_dir().join("quokka-queue-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/a.txt"), "данные".repeat(1000)).unwrap();
-
+        let ops = FakeOps { started: Default::default() };
         let mut q = Queue::default();
-        let zip = dir.join("a.zip");
-        q.push(OpSpec::Zip { sources: vec![dir.join("src")], dest: zip.clone() });
-        q.push(OpSpec::Unzip { archive: zip.clone(), dest: dir.join("out"), overwrite: false });
-        q.push(OpSpec::Delete { sources: vec![zip.clone()] });
-        let done = wait(&mut q, &ctx);
+        let zip = PathBuf::from("/d/a.zip");
+        q.push(OpSpec::Zip { sources: vec![PathBuf::from("/d/src")], dest: zip.clone() });
+        q.push(OpSpec::Unzip { archive: zip.clone(), dest: PathBuf::from("/d/out"), overwrite: false });
+        q.push(OpSpec::Delete { sources: vec![] });
+        let done = wait(&mut q, &ops);
 
         assert_eq!(done.len(), 3, "all tasks finish");
-        assert!(done.iter().all(|f| f.result.is_ok()), "{:?}", done.iter().map(|f| f.result.clone()).collect::<Vec<_>>());
-        assert_eq!(std::fs::read_to_string(dir.join("out/src/a.txt")).unwrap(), "данные".repeat(1000));
-        assert!(!zip.exists());
+        assert!(done[0].result.is_ok() && done[1].result.is_ok());
+        assert!(done[2].result.is_err());
+        assert!(matches!(q.tasks[2].state, State::Failed(_)));
+        let started = ops.started.lock().unwrap();
+        assert!(started[0].starts_with("Архивация") && started[1].starts_with("Распаковка"));
     }
 
     #[test]

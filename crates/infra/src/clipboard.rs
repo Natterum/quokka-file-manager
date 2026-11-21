@@ -1,4 +1,5 @@
 //! Native file clipboard, shared with Windows Explorer (CF_HDROP).
+use quokka_domain::{tr, trf};
 use std::path::PathBuf;
 
 #[derive(Debug, PartialEq)]
@@ -21,7 +22,7 @@ mod native {
     impl Clipboard {
         fn open(hwnd: isize) -> Result<Self, String> {
             if unsafe { OpenClipboard(hwnd as HWND) } == 0 {
-                return Err("Буфер обмена занят другой программой. Попробуйте ещё раз".into());
+                return Err(tr!("Буфер обмена занят другой программой. Попробуйте ещё раз", "The clipboard is busy with another program. Try again").into());
             }
             Ok(Self)
         }
@@ -41,11 +42,11 @@ mod native {
             unsafe {
                 let mem = Self(GlobalAlloc(GHND, bytes.len()));
                 if mem.0.is_null() {
-                    return Err("Недостаточно памяти для буфера обмена".into());
+                    return Err(tr!("Недостаточно памяти для буфера обмена", "Not enough memory for the clipboard").into());
                 }
                 let ptr = GlobalLock(mem.0);
                 if ptr.is_null() {
-                    return Err("Не удалось открыть память буфера обмена".into());
+                    return Err(tr!("Не удалось открыть память буфера обмена", "Failed to open clipboard memory").into());
                 }
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast(), bytes.len());
                 GlobalUnlock(mem.0);
@@ -54,8 +55,8 @@ mod native {
         }
         fn publish(mut self, format: u32) -> Result<(), String> {
             if unsafe { SetClipboardData(format, self.0) }.is_null() {
-                return Err(format!(
-                    "Не удалось записать файлы в буфер обмена: {} (формат {format})",
+                return Err(trf!(
+                    "Не удалось записать файлы в буфер обмена: {} (формат {format})", "Failed to put files on the clipboard: {} (format {format})",
                     std::io::Error::last_os_error()
                 ));
             }
@@ -93,11 +94,11 @@ mod native {
         let effect = Memory::new(&(if files.cut { 2u32 } else { 1u32 }).to_le_bytes())?;
         let format = effect_format();
         if format == 0 {
-            return Err("Не удалось зарегистрировать формат буфера обмена".into());
+            return Err(tr!("Не удалось зарегистрировать формат буфера обмена", "Failed to register the clipboard format").into());
         }
         let _clipboard = Clipboard::open(hwnd)?;
         if unsafe { EmptyClipboard() } == 0 {
-            return Err("Не удалось очистить буфер обмена".into());
+            return Err(tr!("Не удалось очистить буфер обмена", "Failed to clear the clipboard").into());
         }
         data.publish(CF_HDROP as u32)?;
         effect.publish(format)
@@ -108,7 +109,7 @@ mod native {
         unsafe {
             let drop = GetClipboardData(CF_HDROP as u32);
             if drop.is_null() {
-                return Err("В буфере обмена нет файлов".into());
+                return Err(tr!("В буфере обмена нет файлов", "There are no files on the clipboard").into());
             }
             let count = DragQueryFileW(drop, u32::MAX, std::ptr::null_mut(), 0);
             let mut paths = Vec::new();
@@ -116,14 +117,14 @@ mod native {
                 let len = DragQueryFileW(drop, i, std::ptr::null_mut(), 0);
                 let mut wide = vec![0u16; len as usize + 1];
                 if DragQueryFileW(drop, i, wide.as_mut_ptr(), len + 1) != len || len == 0 {
-                    return Err("Не удалось прочитать путь из буфера обмена".into());
+                    return Err(tr!("Не удалось прочитать путь из буфера обмена", "Failed to read a path from the clipboard").into());
                 }
                 paths.push(PathBuf::from(std::ffi::OsString::from_wide(
                     &wide[..len as usize],
                 )));
             }
             if paths.is_empty() {
-                return Err("В буфере обмена нет файлов".into());
+                return Err(tr!("В буфере обмена нет файлов", "There are no files on the clipboard").into());
             }
             let effect = GetClipboardData(effect_format());
             let mut cut = false;

@@ -1,9 +1,14 @@
 //! Cached Windows file icons, resolved off the UI thread.
+//!
+//! Most files share the icon of their type, so the cache is keyed by extension and a
+//! folder of 10 000 `.txt` files costs one shell call and one texture. Only types
+//! whose files carry their own icon (programs, shortcuts, icon files …) are looked
+//! up per file.
 
 use crate::{icons, iconsrc, util::FileKind};
 use eframe::egui::{self, Painter, Rect};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::mpsc,
 };
@@ -11,17 +16,43 @@ use std::{
 const CAPACITY: usize = 2048;
 const MAX_PENDING: usize = 128;
 
+/// Extensions whose icon depends on the file itself, not just its type.
+const OWN_ICON: [&str; 10] = ["exe", "lnk", "ico", "cur", "ani", "url", "scr", "cpl", "msc", "appref-ms"];
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum IconKey {
+    File(PathBuf),
+    Type(String),
+}
+
+impl IconKey {
+    fn of(path: &Path, ext: &str) -> IconKey {
+        if OWN_ICON.contains(&ext) {
+            IconKey::File(path.to_path_buf())
+        } else {
+            IconKey::Type(ext.to_string())
+        }
+    }
+
+    fn load(&self) -> Option<iconsrc::Rgba> {
+        match self {
+            IconKey::File(path) => iconsrc::shell_icon(path, 48),
+            IconKey::Type(ext) => iconsrc::type_icon(ext, 48),
+        }
+    }
+}
+
 pub struct FileIcons {
-    entries: HashMap<PathBuf, Option<egui::TextureHandle>>,
-    ready: VecDeque<PathBuf>,
-    pending: std::collections::HashSet<PathBuf>,
-    requests: mpsc::Sender<PathBuf>,
-    results: mpsc::Receiver<(PathBuf, Option<iconsrc::Rgba>)>,
+    entries: HashMap<IconKey, Option<egui::TextureHandle>>,
+    ready: VecDeque<IconKey>,
+    pending: HashSet<IconKey>,
+    requests: mpsc::Sender<IconKey>,
+    results: mpsc::Receiver<(IconKey, Option<iconsrc::Rgba>)>,
 }
 
 impl FileIcons {
     pub fn new(ctx: &egui::Context) -> Self {
-        let (requests, jobs) = mpsc::channel::<PathBuf>();
+        let (requests, jobs) = mpsc::channel::<IconKey>();
         let (done, results) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -32,9 +63,9 @@ impl FileIcons {
                     windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
                 ) >= 0
             };
-            for path in jobs {
-                let image = iconsrc::shell_icon(&path, 48);
-                if done.send((path, image)).is_err() {
+            for key in jobs {
+                let image = key.load();
+                if done.send((key, image)).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -44,25 +75,17 @@ impl FileIcons {
                 unsafe { windows_sys::Win32::System::Com::CoUninitialize() };
             }
         });
-        Self {
-            entries: HashMap::new(),
-            ready: VecDeque::new(),
-            pending: Default::default(),
-            requests,
-            results,
-        }
+        Self { entries: HashMap::new(), ready: VecDeque::new(), pending: Default::default(), requests, results }
     }
 
-    fn texture(&mut self, ctx: &egui::Context, path: &Path) -> Option<egui::TextureId> {
-        while let Ok((path, image)) = self.results.try_recv() {
-            self.pending.remove(&path);
+    /// Turn icons the worker has finished into textures.
+    fn receive(&mut self, ctx: &egui::Context) {
+        while let Ok((key, image)) = self.results.try_recv() {
+            self.pending.remove(&key);
             let texture = image.map(|image| {
                 ctx.load_texture(
-                    format!("file-icon:{}", path.display()),
-                    egui::ColorImage::from_rgba_unmultiplied(
-                        [image.size, image.size],
-                        &image.pixels,
-                    ),
+                    format!("file-icon:{key:?}"),
+                    egui::ColorImage::from_rgba_unmultiplied([image.size, image.size], &image.pixels),
                     egui::TextureOptions::LINEAR,
                 )
             });
@@ -71,36 +94,27 @@ impl FileIcons {
                     self.entries.remove(&old);
                 }
             }
-            self.ready.push_back(path.clone());
-            self.entries.insert(path, texture);
+            self.ready.push_back(key.clone());
+            self.entries.insert(key, texture);
         }
-        if let Some(texture) = self.entries.get(path) {
+    }
+
+    fn texture(&mut self, ctx: &egui::Context, path: &Path, ext: &str) -> Option<egui::TextureId> {
+        self.receive(ctx);
+        let key = IconKey::of(path, ext);
+        if let Some(texture) = self.entries.get(&key) {
             return texture.as_ref().map(|t| t.id());
         }
-        if self.pending.len() < MAX_PENDING && !self.pending.contains(path) {
-            if self.requests.send(path.to_path_buf()).is_ok() {
-                self.pending.insert(path.to_path_buf());
-            }
+        if self.pending.len() < MAX_PENDING && !self.pending.contains(&key) && self.requests.send(key.clone()).is_ok() {
+            self.pending.insert(key);
         }
         None
     }
 }
 
-pub fn paint(
-    cache: Option<&mut FileIcons>,
-    painter: &Painter,
-    rect: Rect,
-    path: &Path,
-    kind: FileKind,
-    ext: &str,
-) {
-    if let Some(texture) = cache.and_then(|cache| cache.texture(painter.ctx(), path)) {
-        painter.image(
-            texture,
-            rect,
-            Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
+pub fn paint(cache: Option<&mut FileIcons>, painter: &Painter, rect: Rect, path: &Path, kind: FileKind, ext: &str) {
+    if let Some(texture) = cache.and_then(|cache| cache.texture(painter.ctx(), path, ext)) {
+        painter.image(texture, rect, Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     } else {
         icons::file(painter, rect, kind, ext);
     }
@@ -110,29 +124,43 @@ pub fn paint(
 mod tests {
     use super::*;
 
+    fn wait(cache: &mut FileIcons, ctx: &egui::Context) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !cache.pending.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cache.receive(ctx);
+        }
+        assert!(cache.pending.is_empty(), "icon worker timed out");
+    }
+
     #[test]
     fn loads_file_icons_in_background_and_caches_failures() {
         let ctx = egui::Context::default();
         let mut cache = FileIcons::new(&ctx);
         let exe = std::env::current_exe().unwrap();
         let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let missing = exe.join("missing-file.txt");
-        for path in [&exe, &file, &missing] {
-            assert!(cache.texture(&ctx, path).is_none());
+        let missing = exe.join("missing-file.exe");
+        assert!(cache.texture(&ctx, &exe, "exe").is_none());
+        assert!(cache.texture(&ctx, &file, "toml").is_none());
+        assert!(cache.texture(&ctx, &missing, "exe").is_none());
+        wait(&mut cache, &ctx);
+        assert!(cache.texture(&ctx, &exe, "exe").is_some());
+        assert!(cache.texture(&ctx, &file, "toml").is_some());
+        assert!(cache.entries.get(&IconKey::File(missing.clone())).unwrap().is_none());
+        assert!(cache.texture(&ctx, &missing, "exe").is_none());
+        assert!(cache.pending.is_empty(), "failed icons should not be requested again");
+    }
+
+    #[test]
+    fn files_of_one_type_share_an_icon() {
+        let ctx = egui::Context::default();
+        let mut cache = FileIcons::new(&ctx);
+        for i in 0..500 {
+            cache.texture(&ctx, &PathBuf::from(format!(r"C:\nowhere\{i}.txt")), "txt");
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !cache.pending.is_empty() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            cache.texture(&ctx, &exe);
-        }
-        assert!(cache.pending.is_empty(), "icon worker timed out");
-        assert!(cache.texture(&ctx, &exe).is_some());
-        assert!(cache.texture(&ctx, &file).is_some());
-        assert!(cache.entries.get(&missing).unwrap().is_none());
-        assert!(cache.texture(&ctx, &missing).is_none());
-        assert!(
-            cache.pending.is_empty(),
-            "failed icons should not be requested again"
-        );
+        assert_eq!(cache.pending.len(), 1, "one request per type");
+        wait(&mut cache, &ctx);
+        assert!(cache.texture(&ctx, Path::new(r"C:\elsewhere\x.txt"), "txt").is_some(), "type icons need no real file");
+        assert_eq!(cache.entries.len(), 1);
     }
 }

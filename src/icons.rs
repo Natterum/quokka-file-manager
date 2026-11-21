@@ -1,7 +1,7 @@
 //! Hand-painted vector icons: folders, coloured file tiles and outline glyphs.
 
 use crate::theme::*;
-use crate::util::{mix, FileKind};
+use crate::util::{mix, FileKind, KindColor};
 use eframe::egui::{pos2, vec2, Align2, Color32, Painter, Rect, Rounding, Shape, Stroke};
 use std::f32::consts::PI;
 
@@ -100,6 +100,8 @@ pub enum Glyph {
     ArrowLeft,
     ArrowRight,
     ArrowUp,
+    ArrowDown,
+    Minus,
     Refresh,
     Columns,
     Gear,
@@ -118,6 +120,10 @@ pub enum Glyph {
     Book,
     Archive,
     Game,
+    Scissors,
+    Clipboard,
+    Check,
+    Unpack,
 }
 
 impl Glyph {
@@ -265,6 +271,13 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.5, 0.18), at(0.5, 0.82)], s);
             p.add(Shape::line(vec![at(0.28, 0.4), at(0.5, 0.18), at(0.72, 0.4)], s));
         }
+        Glyph::ArrowDown => {
+            p.line_segment([at(0.5, 0.18), at(0.5, 0.82)], s);
+            p.add(Shape::line(vec![at(0.28, 0.6), at(0.5, 0.82), at(0.72, 0.6)], s));
+        }
+        Glyph::Minus => {
+            p.line_segment([at(0.22, 0.5), at(0.78, 0.5)], s);
+        }
         Glyph::Refresh => {
             let n = 20;
             let pts: Vec<_> = (0..=n)
@@ -383,6 +396,26 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.21, 0.51), at(0.39, 0.51)], s);
             p.circle_filled(at(0.66, 0.46), w * 0.045, c);
             p.circle_filled(at(0.76, 0.56), w * 0.045, c);
+        }
+        Glyph::Scissors => {
+            p.circle_stroke(at(0.3, 0.74), w * 0.12, s);
+            p.circle_stroke(at(0.7, 0.74), w * 0.12, s);
+            p.line_segment([at(0.37, 0.64), at(0.7, 0.14)], s);
+            p.line_segment([at(0.63, 0.64), at(0.3, 0.14)], s);
+        }
+        Glyph::Clipboard => {
+            p.rect_stroke(Rect::from_min_max(at(0.2, 0.2), at(0.8, 0.88)), 2.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.36, 0.1), at(0.64, 0.28)), 1.5, s);
+            p.line_segment([at(0.34, 0.5), at(0.66, 0.5)], s);
+            p.line_segment([at(0.34, 0.66), at(0.58, 0.66)], s);
+        }
+        Glyph::Check => {
+            p.add(Shape::line(vec![at(0.2, 0.52), at(0.42, 0.72), at(0.8, 0.3)], s));
+        }
+        Glyph::Unpack => {
+            p.add(Shape::line(vec![at(0.14, 0.42), at(0.14, 0.86), at(0.86, 0.86), at(0.86, 0.42)], s));
+            p.line_segment([at(0.5, 0.12), at(0.5, 0.62)], s);
+            p.add(Shape::line(vec![at(0.32, 0.45), at(0.5, 0.63), at(0.68, 0.45)], s));
         }
         Glyph::ChevronDown => {
             p.add(Shape::line(vec![at(0.28, 0.4), at(0.5, 0.62), at(0.72, 0.4)], s));

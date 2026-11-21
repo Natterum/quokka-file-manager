@@ -2,8 +2,9 @@
 //! wildcard masks with exclusions, regular expressions, text inside files (several
 //! encodings), size / date / kind filters, depth limit and a look inside ZIP archives.
 
+use quokka_domain::{tr, trf};
 use crate::zip::ZipReader;
-use eframe::egui;
+use quokka_core::Waker;
 use regex::bytes::{Regex as BytesRegex, RegexBuilder as BytesRegexBuilder};
 use regex::{Regex, RegexBuilder};
 use std::fs::{self, File};
@@ -119,19 +120,19 @@ pub struct Search {
 
 impl Search {
     /// Validate the query, compile its patterns and start the worker thread.
-    pub fn start(q: Query, ctx: egui::Context) -> Result<Search, String> {
+    pub fn start(q: Query, waker: Waker) -> Result<Search, String> {
         if q.roots.is_empty() {
-            return Err("Укажите, где искать".into());
+            return Err(tr!("Укажите, где искать", "Specify where to search").into());
         }
         for r in &q.roots {
             if !r.is_dir() {
-                return Err(format!("Папка не найдена: {}", r.display()));
+                return Err(trf!("Папка не найдена: {}", "Folder not found: {}", r.display()));
             }
         }
         let names = NameMatcher::new(&q.mask, q.mask_regex, q.mask_case)?;
         let text = match &q.text {
             Some(t) if !t.text.is_empty() => Some((text_regex(t)?, t.not_containing)),
-            Some(_) => return Err("Введите текст для поиска".into()),
+            Some(_) => return Err(tr!("Введите текст для поиска", "Enter text to search for").into()),
             None => None,
         };
         let (tx, rx) = mpsc::channel();
@@ -141,7 +142,7 @@ impl Search {
             names,
             text,
             tx,
-            ctx,
+            waker,
             cancel: cancel.clone(),
             batch: Vec::new(),
             last: Instant::now(),
@@ -268,7 +269,7 @@ fn alternation(masks: &[String], case: bool) -> Result<Option<Regex>, String> {
         .case_insensitive(!case)
         .build()
         .map(Some)
-        .map_err(|e| format!("Неверная маска: {e}"))
+        .map_err(|e| trf!("Неверная маска: {e}", "Invalid mask: {e}"))
 }
 
 impl NameMatcher {
@@ -283,7 +284,7 @@ impl NameMatcher {
                         .case_insensitive(!case)
                         .size_limit(1 << 22)
                         .build()
-                        .map_err(|e| regex_error("имени", &e))?,
+                        .map_err(|e| regex_error(tr!("имени", "name"), &e))?,
                 )
             };
             return Ok(NameMatcher { include, exclude_files: None, exclude_dirs: None });
@@ -323,13 +324,13 @@ fn regex_error(what: &str, e: &regex::Error) -> String {
         regex::Error::Syntax(msg) => {
             let last = msg.lines().rev().find(|l| l.starts_with("error:")).unwrap_or("").trim_start_matches("error:").trim();
             if last.is_empty() {
-                format!("Ошибка в регулярном выражении для {what}")
+                trf!("Ошибка в регулярном выражении для {what}", "Error in regular expression for {what}")
             } else {
-                format!("Ошибка в регулярном выражении для {what}: {last}")
+                trf!("Ошибка в регулярном выражении для {what}: {last}", "Error in regular expression for {what}: {last}")
             }
         }
-        regex::Error::CompiledTooBig(_) => "Слишком сложное регулярное выражение".into(),
-        _ => format!("Ошибка в регулярном выражении для {what}"),
+        regex::Error::CompiledTooBig(_) => tr!("Слишком сложное регулярное выражение", "Regular expression is too complex").into(),
+        _ => trf!("Ошибка в регулярном выражении для {what}", "Error in regular expression for {what}"),
     }
 }
 
@@ -389,7 +390,7 @@ fn text_regex(t: &TextQuery) -> Result<BytesRegex, String> {
         .multi_line(true)
         .size_limit(1 << 24)
         .build()
-        .map_err(|e| regex_error("текста", &e))
+        .map_err(|e| regex_error(tr!("текста", "text"), &e))
 }
 
 const CHUNK: u64 = 1 << 20;
@@ -436,7 +437,7 @@ struct Worker {
     names: NameMatcher,
     text: Option<(BytesRegex, bool)>,
     tx: Sender<Msg>,
-    ctx: egui::Context,
+    waker: Waker,
     cancel: Arc<AtomicBool>,
     batch: Vec<Hit>,
     last: Instant,
@@ -468,7 +469,7 @@ impl Worker {
                 let _ = self.tx.send(Msg::Found(std::mem::take(&mut self.batch)));
             }
             let _ = self.tx.send(Msg::Progress { current: self.current.clone(), files: self.files, dirs: self.dirs });
-            self.ctx.request_repaint();
+            self.waker.wake();
             self.last = Instant::now();
         }
     }
@@ -511,7 +512,7 @@ impl Worker {
         }
         self.flush(true);
         let _ = self.tx.send(Msg::Done { errors: self.errors });
-        self.ctx.request_repaint();
+        self.waker.wake();
     }
 
     fn walk(&mut self, root: PathBuf) {
@@ -722,7 +723,7 @@ mod tests {
                 older_than: None,
             };
             f(&mut q);
-            let mut s = Search::start(q, egui::Context::default()).unwrap();
+            let mut s = Search::start(q, Waker::noop()).unwrap();
             while s.running {
                 std::thread::sleep(Duration::from_millis(5));
                 s.poll();

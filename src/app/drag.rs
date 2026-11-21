@@ -2,6 +2,7 @@
 //! from them. Ctrl — copy, Shift — move, no key — move within one drive and copy
 //! between drives (as in Explorer).
 
+use quokka_domain::{tr, trf};
 use super::*;
 use crate::dnd;
 use eframe::egui::{CursorIcon, LayerId, Order, Pos2};
@@ -59,17 +60,17 @@ impl QuokkaApp {
             }
             // a folder row — except one of the dragged folders, which falls through to the pane
             if let Some((r, p)) = z.rows.iter().find(|(r, p)| r.contains(pos) && !sources.contains(p)) {
-                return Some(Target { side, dest: p.clone(), highlight: *r, ok: dnd::can_drop(sources, p) });
+                return Some(Target { side, dest: p.clone(), highlight: *r, ok: quokka_infra::archive::location(p).is_none() && dnd::can_drop(sources, p) });
             }
             let dest = z.folder.clone().unwrap_or_default();
-            let ok = dnd::can_drop(sources, &dest);
+            let ok = quokka_infra::archive::location(&dest).is_none() && dnd::can_drop(sources, &dest);
             return Some(Target { side, dest, highlight: z.area, ok });
         }
         None
     }
 
     fn drop_files(&mut self, sources: Vec<PathBuf>, dest: PathBuf, ctrl: bool, shift: bool) {
-        let mv = dnd::is_move(ctrl, shift, &sources, &dest);
+        let mv = !sources.iter().any(|s| quokka_infra::archive::is_member(s)) && dnd::is_move(ctrl, shift, &sources, &dest);
         let overwrite = false;
         self.enqueue(if mv { OpSpec::Move { sources, dest, overwrite } } else { OpSpec::Copy { sources, dest, overwrite } });
     }
@@ -87,6 +88,10 @@ impl QuokkaApp {
             let outside = pos.map_or(true, |p| !ctx.screen_rect().shrink(2.0).contains(p));
             if outside && self.hwnd != 0 && cfg!(windows) {
                 let d = self.file_drag.take().expect("checked above");
+                if d.sources.iter().any(|s| quokka_infra::archive::is_member(s)) {
+                    self.toast(tr!("Сначала извлеките файлы из архива через F5", "Extract files with F5 before dragging to another app"), false);
+                    return;
+                }
                 dnd::drag_out(self.hwnd, &d.sources);
                 self.release_pointer = true;
                 self.reload_all();
@@ -95,7 +100,7 @@ impl QuokkaApp {
             }
             if let Some(pos) = pos {
                 let t = self.drop_target(pos, &d.sources);
-                let mv = t.as_ref().map(|t| dnd::is_move(mods.command, mods.shift, &d.sources, &t.dest));
+                let mv = t.as_ref().map(|t| !d.sources.iter().any(|s| quokka_infra::archive::is_member(s)) && dnd::is_move(mods.command, mods.shift, &d.sources, &t.dest));
                 ctx.set_cursor_icon(match (&t, mv) {
                     (Some(t), Some(true)) if t.ok => CursorIcon::Move,
                     (Some(t), Some(false)) if t.ok => CursorIcon::Copy,
@@ -135,7 +140,7 @@ impl QuokkaApp {
         let (ctrl, shift) = dnd::keys();
         if !dropped.is_empty() {
             if !self.idle() {
-                self.toast("Закройте диалог, чтобы перенести файлы", true);
+                self.toast(tr!("Закройте диалог, чтобы перенести файлы", "Close the dialog to transfer files"), true);
                 return;
             }
             match self.drop_target(pos, &dropped) {
@@ -143,7 +148,7 @@ impl QuokkaApp {
                     self.active = t.side;
                     self.drop_files(dropped, t.dest, ctrl, shift);
                 }
-                Some(t) if t.dest.as_os_str().is_empty() => self.toast("Откройте папку, чтобы положить в неё файлы", true),
+                Some(t) if t.dest.as_os_str().is_empty() => self.toast(tr!("Откройте папку, чтобы положить в неё файлы", "Open a folder to drop files into it"), true),
                 _ => {}
             }
         } else if self.idle() {
@@ -173,12 +178,12 @@ fn paint(ctx: &egui::Context, pos: Pos2, sources: &[PathBuf], target: Option<&Ta
     }
     let title = match (target, mv) {
         (Some(t), Some(mv)) if ok => {
-            let verb = if mv { "Переместить" } else { "Копировать" };
-            format!("{verb} {} в «{}»", what(sources), name_of(&t.dest))
+            let verb = if mv { tr!("Переместить", "Move") } else { tr!("Копировать", "Copy") };
+            trf!("{verb} {} в «{}»", "{verb} {} to “{}”", what(sources), name_of(&t.dest))
         }
-        _ => format!("{} — сюда нельзя", what(sources)),
+        _ => trf!("{} — сюда нельзя", "{} — cannot drop here", what(sources)),
     };
-    let hint = "Ctrl — копировать · Shift — переместить";
+    let hint = tr!("Ctrl — копировать · Shift — переместить", "Ctrl — copy · Shift — move");
     let g1 = p.layout_no_wrap(title, semibold(14.0), if ok { TEXT } else { MUTED });
     let g2 = p.layout_no_wrap(hint.into(), regular(12.5), MUTED);
     let w = g1.size().x.max(g2.size().x) + 24.0;

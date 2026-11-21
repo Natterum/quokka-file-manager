@@ -1,0 +1,8 @@
+[package]
+name = "quokka-core"
+version = "0.1.0"
+edition = "2021"
+description = "Quokka application layer: use cases (tabs, operation queue, folder sizes) and the ports adapters implement."
+
+[dependencies]
+quokka-domain = { path = "../domain" }

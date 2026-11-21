@@ -6,6 +6,7 @@
 //! * `C:\…\shell32.dll,4`  — icon #4 from a resource file (exe, dll, ico, cpl, …)
 //! * `C:\…\picture.png`    — an image file
 
+use quokka_domain::{tr, trf};
 use std::path::{Path, PathBuf};
 
 pub const SHELL: &str = "shell";
@@ -17,15 +18,17 @@ pub struct Rgba {
 }
 
 /// System libraries offered in the "Windows" tab of the icon picker.
-pub const WINDOWS_LIBS: [(&str, &str); 7] = [
-    ("Основные (imageres.dll)", "imageres.dll"),
-    ("Классические (shell32.dll)", "shell32.dll"),
-    ("Устройства (ddores.dll)", "ddores.dll"),
-    ("Мультимедиа (mmres.dll)", "mmres.dll"),
-    ("Проводник (explorer.exe)", "explorer.exe"),
-    ("Старые (moricons.dll)", "moricons.dll"),
-    ("Сеть (netshell.dll)", "netshell.dll"),
-];
+pub fn windows_libs() -> [(&'static str, &'static str); 7] {
+    [
+    (tr!("Основные (imageres.dll)", "Main (imageres.dll)"), "imageres.dll"),
+    (tr!("Классические (shell32.dll)", "Classic (shell32.dll)"), "shell32.dll"),
+    (tr!("Устройства (ddores.dll)", "Devices (ddores.dll)"), "ddores.dll"),
+    (tr!("Мультимедиа (mmres.dll)", "Multimedia (mmres.dll)"), "mmres.dll"),
+    (tr!("Проводник (explorer.exe)", "Explorer (explorer.exe)"), "explorer.exe"),
+    (tr!("Старые (moricons.dll)", "Legacy (moricons.dll)"), "moricons.dll"),
+    (tr!("Сеть (netshell.dll)", "Network (netshell.dll)"), "netshell.dll"),
+]
+}
 
 pub fn system_lib(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
@@ -66,12 +69,12 @@ pub fn make_spec(file: &Path, index: i32) -> String {
 /// Short human description of a spec for the UI.
 pub fn describe(spec: &str) -> String {
     if spec == SHELL {
-        return "Значок папки из Windows".into();
+        return tr!("Значок папки из Windows", "Folder icon from Windows").into();
     }
     let (file, idx) = split_spec(spec);
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| spec.to_string());
     if is_resource_file(&file) && ext_of(&file) != "ico" {
-        format!("{name}, значок №{idx}")
+        trf!("{name}, значок №{idx}", "{name}, icon #{idx}")
     } else {
         name
     }
@@ -80,11 +83,11 @@ pub fn describe(spec: &str) -> String {
 /// Load the icon described by `spec`; `folder` is the bookmarked folder (for `shell`).
 pub fn load(spec: &str, folder: &Path, size: u32) -> Result<Rgba, String> {
     if spec == SHELL {
-        return shell_icon(folder, size).ok_or_else(|| "Windows не вернула значок папки".into());
+        return shell_icon(folder, size).ok_or_else(|| tr!("Windows не вернула значок папки", "Windows did not return the folder icon").into());
     }
     let (file, idx) = split_spec(spec);
     if is_resource_file(&file) {
-        return extract(&file, idx, size).ok_or_else(|| format!("Не удалось извлечь значок №{idx} из {}", file.display()));
+        return extract(&file, idx, size).ok_or_else(|| trf!("Не удалось извлечь значок №{idx} из {}", "Failed to extract icon #{idx} from {}", file.display()));
     }
     load_image(&file, size)
 }
@@ -108,7 +111,7 @@ fn load_image(file: &Path, size: u32) -> Result<Rgba, String> {
         let scale = size as f32 / sz.width().max(sz.height());
         let tx = (size as f32 - sz.width() * scale) / 2.0;
         let ty = (size as f32 - sz.height() * scale) / 2.0;
-        let mut pm = tiny_skia::Pixmap::new(size, size).ok_or("пустое изображение")?;
+        let mut pm = tiny_skia::Pixmap::new(size, size).ok_or(tr!("пустое изображение", "empty image"))?;
         resvg::render(&tree, tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, tx, ty), &mut pm.as_mut());
         let pixels = pm
             .pixels()
@@ -227,28 +230,45 @@ pub fn count(file: &Path) -> usize {
 /// The icon Windows shows for this folder (custom desktop.ini icons included).
 #[cfg(windows)]
 pub fn shell_icon(folder: &Path, size: u32) -> Option<Rgba> {
-    use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_ICONLOCATION, SHGFI_LARGEICON};
-    let path: PathBuf = if folder.as_os_str().is_empty() {
+    if folder.as_os_str().is_empty() {
         // "Этот компьютер" has no path; use the computer icon from imageres
         return extract(&system_lib("imageres.dll"), 104, size);
-    } else {
-        folder.to_path_buf()
+    }
+    shell_info_icon(folder.as_os_str(), false, size)
+}
+
+/// The icon of a file type (by extension), without touching any file: the same
+/// for every `.txt`, so it is fetched once per type.
+#[cfg(windows)]
+pub fn type_icon(ext: &str, size: u32) -> Option<Rgba> {
+    let name = if ext.is_empty() { "file".to_string() } else { format!("file.{ext}") };
+    shell_info_icon(std::ffi::OsStr::new(&name), true, size)
+}
+
+#[cfg(windows)]
+fn shell_info_icon(path: &std::ffi::OsStr, by_type: bool, size: u32) -> Option<Rgba> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
+    use windows_sys::Win32::UI::Shell::{
+        SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_ICONLOCATION, SHGFI_LARGEICON, SHGFI_USEFILEATTRIBUTES,
     };
-    let w = wide(path.as_os_str());
+    let w = wide(path);
+    let (attrs, extra) = if by_type { (FILE_ATTRIBUTE_NORMAL, SHGFI_USEFILEATTRIBUTES) } else { (0, 0) };
     unsafe {
         // prefer the icon location: lets us extract at full size
         let mut info: SHFILEINFOW = std::mem::zeroed();
-        if SHGetFileInfoW(w.as_ptr(), 0, &mut info, std::mem::size_of::<SHFILEINFOW>() as u32, SHGFI_ICONLOCATION) != 0 {
-            let len = info.szDisplayName.iter().position(|&c| c == 0).unwrap_or(0);
+        if SHGetFileInfoW(w.as_ptr(), attrs, &mut info, std::mem::size_of::<SHFILEINFOW>() as u32, SHGFI_ICONLOCATION | extra) != 0 {
+            // SHFILEINFOW is packed on x86; copy before borrowing the array.
+            let display_name = info.szDisplayName;
+            let len = display_name.iter().position(|&c| c == 0).unwrap_or(0);
             if len > 0 {
-                let file = PathBuf::from(String::from_utf16_lossy(&info.szDisplayName[..len]));
+                let file = PathBuf::from(String::from_utf16_lossy(&display_name[..len]));
                 if let Some(img) = extract(&file, info.iIcon, size) {
                     return Some(img);
                 }
             }
         }
         let mut info: SHFILEINFOW = std::mem::zeroed();
-        if SHGetFileInfoW(w.as_ptr(), 0, &mut info, std::mem::size_of::<SHFILEINFOW>() as u32, SHGFI_ICON | SHGFI_LARGEICON) == 0 {
+        if SHGetFileInfoW(w.as_ptr(), attrs, &mut info, std::mem::size_of::<SHFILEINFOW>() as u32, SHGFI_ICON | SHGFI_LARGEICON | extra) == 0 {
             return None;
         }
         hicon_to_rgba(info.hIcon, size)
@@ -259,10 +279,10 @@ pub fn shell_icon(folder: &Path, size: u32) -> Option<Rgba> {
 #[cfg(windows)]
 pub fn pick_file() -> Option<PathBuf> {
     use windows_sys::Win32::UI::Controls::Dialogs::*;
-    let filter: Vec<u16> = "Значки и изображения\0*.ico;*.png;*.jpg;*.jpeg;*.svg;*.bmp;*.gif;*.webp;*.exe;*.dll;*.icl;*.cpl\0Все файлы\0*.*\0\0"
+    let filter: Vec<u16> = tr!("Значки и изображения\0*.ico;*.png;*.jpg;*.jpeg;*.svg;*.bmp;*.gif;*.webp;*.exe;*.dll;*.icl;*.cpl\0Все файлы\0*.*\0\0", "Icons and images\0*.ico;*.png;*.jpg;*.jpeg;*.svg;*.bmp;*.gif;*.webp;*.exe;*.dll;*.icl;*.cpl\0All files\0*.*\0\0")
         .encode_utf16()
         .collect();
-    let title: Vec<u16> = "Выберите значок\0".encode_utf16().collect();
+    let title: Vec<u16> = tr!("Выберите значок\0", "Choose an icon\0").encode_utf16().collect();
     let mut buf = vec![0u16; 4096];
     let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
     ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
@@ -286,6 +306,11 @@ pub fn extract(_file: &Path, _index: i32, _size: u32) -> Option<Rgba> {
 pub fn count(_file: &Path) -> usize {
     0
 }
+#[cfg(not(windows))]
+pub fn type_icon(_ext: &str, _size: u32) -> Option<Rgba> {
+    None
+}
+
 #[cfg(not(windows))]
 pub fn shell_icon(_folder: &Path, _size: u32) -> Option<Rgba> {
     None
