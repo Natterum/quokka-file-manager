@@ -32,6 +32,17 @@ The executable is named `quokka`; the window is titled “Quokka File Manager”
 - **Batch rename** (Ctrl+M) with Total Commander masks, live preview, conflict checks, and undo; see [below](#batch-rename-ctrlm).
 - **Session persistence**: tabs in both panes reopen on the next launch.
 - **System tray icon**, minimize to tray on close, and single-window mode (launching again shows the existing window), available in Settings → View and files.
+- **SFTP, FTP, and FTPS servers** (`Ctrl+K`, Tools → Connect to a server): a server folder opens in a pane tab like a local one. Saved connections, password or key-file login (an empty password tries the keys in `~/.ssh`), and server key fingerprint confirmation recorded in `known_hosts`. Remembered passwords are kept in the Windows Credential Manager, never in the settings file. Copy, move, and delete go through the operation queue: download, upload, and server to server. On an SFTP server, `Ctrl+Shift+P` opens an SSH terminal in PuTTY or the Windows `ssh.exe`.
+- **Windows Properties** (`Ctrl+Alt+Enter`, context menu → Properties): the standard Explorer property sheet for the file, folder, or drive under the cursor; several selected items open one combined sheet. “Folder properties” in the empty-area menu shows the current folder.
+- **Updates**: once a day at startup (Settings → View and files → Updates) and on demand (Help → Check for updates…), Quokka asks GitHub Releases for a newer version, shows its release notes, and offers to update. “Update and restart” downloads the package, verifies its SHA-256 checksum, installs it, and restarts Quokka with the same tabs: an MSI installation runs the new MSI, a portable copy replaces `quokka.exe` in place. “Skip this version” stops the automatic reminder for that version.
+
+## Installation
+
+Download from [GitHub Releases](https://github.com/Natterum/quokka-file-manager/releases):
+
+- **Installer** `quokka-v<version>-windows-x64.msi` (or `-x86`): installs into Program Files, adds a Start menu shortcut, and upgrades an existing installation in place.
+- **Portable** `quokka-v<version>-windows-x64.zip`: extract anywhere and run `quokka.exe`; settings live in `%APPDATA%\Quokka`.
+- **winget** (once the package is accepted into the community repository): `winget install Natterum.QuokkaFileManager`.
 
 ## Build and run
 
@@ -64,24 +75,26 @@ cargo test -p quokka-infra --release --test big_folder -- --ignored --nocapture
 
 The `.github/workflows/windows.yml` workflow runs on branch pushes, pull requests, and manually through **Actions → Windows CI and release → Run workflow**. For each architecture, it first runs `cargo test --workspace --locked --target …`, then builds in release mode. Failed tests block the build; failure of either architecture job blocks release publication.
 
-Run artifacts include `quokka-v<version>-windows-x86.zip` and `quokka-v<version>-windows-x64.zip`, containing `quokka.exe`, the README, and the changelog, plus SHA-256 checksum files. Artifacts are retained for 14 days. No installer is created: extract the archive and run `quokka.exe`.
+Before building, the job installs WiX Toolset 5 (`dotnet tool install --global wix`) with its UI extension. Run artifacts include, for each architecture, the portable `quokka-v<version>-windows-<arch>.zip` (`quokka.exe`, the README, and the changelog), the installer `quokka-v<version>-windows-<arch>.msi` (sources in `installer/`), and a `.sha256` checksum file for each. Artifacts are retained for 14 days. The built-in updater downloads these exact file names, so keep them unchanged.
 
 To publish a release:
 
 1. Update `version` in the root `Cargo.toml`, synchronize `Cargo.lock` with `cargo metadata --no-deps --format-version 1`, and update `CHANGELOG.md`.
 2. Commit the changes along with the workflow and push them to GitHub.
-3. Create and push a tag matching the package version (for the current version, `v0.1.0`):
+3. Create and push a tag matching the package version (for the current version, `v0.2.0`):
 
    ```powershell
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 
-After both architecture builds succeed, the workflow creates a draft GitHub Release, uploads both archives and checksums, and publishes it with automatically generated release notes. Tags with a suffix, such as `v0.2.0-rc.1`, are published as prereleases and must also match the version in `Cargo.toml`. Manual runs build artifacts without publishing a release. If an upload is interrupted, rerunning continues with the draft; a published release is not overwritten and requires a new version tag.
+After both architecture builds succeed, the workflow creates a draft GitHub Release, uploads both archives, both installers, and their checksums, and publishes it with automatically generated release notes. Users of earlier versions are then offered the update within a day. Tags with a suffix, such as `v0.2.0-rc.1`, are published as prereleases and must also match the version in `Cargo.toml`. Manual runs build artifacts without publishing a release. If an upload is interrupted, rerunning continues with the draft; a published release is not overwritten and requires a new version tag.
 
-The workflow uses the built-in `GITHUB_TOKEN`; no personal token or additional secrets are needed. GitHub Actions must be enabled in the repository, and organization policy must allow the workflow `contents: write` permission to publish releases. The `origin` Git remote must point to your GitHub repository.
+For a stable tag (no suffix), the `winget` job then writes winget manifests for the MSI packages (`.github/scripts/winget-manifests.ps1`) and uploads them as the `winget-manifests` artifact. If the repository has a `WINGET_TOKEN` secret (a classic personal access token with the `public_repo` scope), it also opens a pull request to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) with `wingetcreate submit`; without the secret, submit the artifact's manifests yourself. The first submission is reviewed by winget moderators; later versions go through the same pull request flow.
 
-You can perform the same build and packaging locally from the project root (requires Rust and Visual Studio Build Tools with C++/Windows SDK):
+The release itself uses the built-in `GITHUB_TOKEN`; only the optional winget submission needs a secret. GitHub Actions must be enabled in the repository, and organization policy must allow the workflow `contents: write` permission to publish releases. The `origin` Git remote must point to your GitHub repository.
+
+You can perform the same build and packaging locally from the project root (requires Rust, Visual Studio Build Tools with C++/Windows SDK, and for the MSI the .NET SDK with WiX: `dotnet tool install --global wix --version 5.0.2` and `wix extension add --global WixToolset.UI.wixext/5.0.2`; pass `-SkipMsi` to build only the ZIP):
 
 ```powershell
 rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
@@ -89,7 +102,7 @@ rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 ./.github/scripts/build-windows.ps1 -Target x86_64-pc-windows-msvc
 ```
 
-Finished files are placed in `release/windows-x86/` and `release/windows-x64/`; ZIP archives and SHA-256 checksums are placed in `release/`.
+Finished files are placed in `release/windows-x86/` and `release/windows-x64/`; ZIP archives, MSI installers, and SHA-256 checksums are placed in `release/`.
 
 ### Dependencies
 
@@ -104,6 +117,9 @@ Finished files are placed in `release/windows-x86/` and `release/windows-x64/`; 
 | `image` | infra, UI | Icon decoding |
 | `windows-sys` | infra (Windows) | Clipboard, drag and drop, Recycle Bin, shell icons |
 | `resvg` | infra, UI | Rasterizing the SVG logo into a window icon |
+| `russh`, `russh-sftp`, `tokio` | infra | SFTP client |
+| `suppaftp`, `native-tls` | infra | FTP and FTPS client |
+| `ureq`, `serde_json`, `sha2` | infra | Update check against GitHub Releases, download, and checksum verification |
 
 ### Platforms
 
@@ -143,7 +159,8 @@ The primary platform is **Windows**, using Segoe UI / Consolas fonts, drives `C:
 | `Ctrl+A` | Select all |
 | `Ctrl+S` / `Ctrl+Shift+S` | Select/deselect by mask |
 | `Ctrl+Shift+I` | Invert selection of visible items |
-| `Ctrl+Shift+P` | Open terminal in current folder |
+| `Ctrl+Shift+P` | Open terminal in current folder (SSH terminal on an SFTP server) |
+| `Ctrl+K` | Connect to a server (SFTP, FTP, FTPS) |
 | `Ctrl+C` | Copy files to clipboard |
 | `Ctrl+X` | Cut files |
 | `Ctrl+V` | Paste into current folder |
@@ -155,12 +172,13 @@ The primary platform is **Windows**, using Segoe UI / Consolas fonts, drives `C:
 | `Ctrl+R` | Refresh |
 | `Ctrl+T` / `Ctrl+W` | New/close tab |
 | `Ctrl+L` | Enter path |
+| `Ctrl+Alt+Enter` | Windows Properties |
 
 ### Mouse
 
 - `Ctrl+click` / `Shift+click`: select an item/range.
 - Double-click: open.
-- Right-click: context menu (View, Edit, Rename, Copy, Move, Delete, New folder, New file).
+- Right-click: context menu (View, Edit, Rename, Copy, Move, Delete, New folder, New file, Properties).
 - **New** in the Windows context menu opens the system list of file types, as in File Explorer: Word, Excel, and other registered types. Windows creates a file in the current folder using the installed program's template and an available name; press F2 to rename it.
 
 ### Dialogs
@@ -234,4 +252,4 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for details, including background folder 
 
 ## License
 
-No license has been specified yet.
+[MIT](LICENSE).
