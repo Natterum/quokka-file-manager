@@ -4,6 +4,7 @@
 
 pub mod archive;
 pub mod clipboard;
+pub mod drives;
 pub mod creds;
 pub mod fsops;
 pub mod ftp;
@@ -11,6 +12,7 @@ pub mod iconsrc;
 pub mod net;
 pub mod pick;
 pub mod imgconv;
+pub mod mtp;
 pub mod rename;
 pub mod search;
 pub mod sftp;
@@ -19,6 +21,7 @@ mod sftp_test_server;
 #[cfg(test)]
 mod ftp_test_server;
 pub mod shell_dnd;
+pub mod shell_menu;
 pub mod shell_new;
 pub mod shell_props;
 pub mod ssh_term;

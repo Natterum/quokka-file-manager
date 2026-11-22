@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 
 /// Short label for a root such as `C:\` → `C:`.
 pub fn root_label(p: &Path) -> String {
+    if crate::remote::is_device(p) {
+        if let Some((site, _)) = crate::remote::split(p) {
+            return site.host;
+        }
+    }
     let s = p.display().to_string();
     let t = s.trim_end_matches(['\\', '/']);
     if t.is_empty() {

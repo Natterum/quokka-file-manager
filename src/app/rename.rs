@@ -426,7 +426,7 @@ impl QuokkaApp {
                 }
                 let text = trf!("Переименовано: {}", "Renamed: {}", items_text(done.len() as u64));
                 self.undo = Some(Undo::Rename(done));
-                self.toast = Some(Toast { text, error: false, undo: true, born: None });
+                self.toast = Some(Toast::undo(text));
                 false
             }
             Err(e) => {

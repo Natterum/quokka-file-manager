@@ -23,7 +23,8 @@ impl BarOut {
     }
 
     fn item_ex(&mut self, ui: &mut Ui, g: Option<Glyph>, text: &str, key: &str, enabled: bool, danger: bool, a: Action) {
-        if menu_item_icon(ui, g, text, key, enabled, danger).clicked() {
+        let key = super::hotkeys::menu_key(&a, key);
+        if menu_item_icon(ui, g, text, &key, enabled, danger).clicked() {
             self.actions.push(a);
             ui.close_menu();
         }
@@ -63,7 +64,7 @@ impl QuokkaApp {
             )
         };
         let has_undo = self.undo.is_some();
-        let on_server = quokka_domain::remote::is_remote(&self.ap_ref().path);
+        let on_server = quokka_domain::remote::is_remote(&self.ap_ref().path) && !quokka_domain::remote::is_device(&self.ap_ref().path);
         let on_sftp = super::remote::is_sftp(&self.ap_ref().path);
         let (dual, hidden, queue_open) = (self.settings.dual, self.settings.show_hidden, self.queue_open);
         let (regex, case) = (self.settings.regex, self.settings.case_sensitive);
