@@ -4307,14 +4307,14 @@ dependencies = [
 
 [[package]]
 name = "quokka-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quokka-domain",
 ]
 
 [[package]]
 name = "quokka-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "regex",
@@ -4322,7 +4322,7 @@ dependencies = [
 
 [[package]]
 name = "quokka-file-manager"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "eframe",
@@ -4338,7 +4338,7 @@ dependencies = [
 
 [[package]]
 name = "quokka-infra"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "crc32fast",
