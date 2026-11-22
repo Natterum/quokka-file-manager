@@ -84,8 +84,9 @@ impl QuokkaApp {
         }
         let (down, pos, mods) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos(), i.modifiers));
         if down {
-            // left the window: hand the drag over to the OS so it can land in Explorer etc.
-            let outside = pos.map_or(true, |p| !ctx.screen_rect().shrink(2.0).contains(p));
+            // left the window (or reached its edge — a maximized window has nowhere else
+            // to go): hand the drag over to the OS so it can land in Explorer etc.
+            let outside = pos.map_or(true, |p| !ctx.screen_rect().shrink(6.0).contains(p));
             if outside && self.hwnd != 0 && cfg!(windows) {
                 let d = self.file_drag.take().expect("checked above");
                 if d.sources.iter().any(|s| quokka_infra::archive::is_member(s)) {

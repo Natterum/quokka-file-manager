@@ -67,6 +67,7 @@ impl QuokkaApp {
         let on_server = quokka_domain::remote::is_remote(&self.ap_ref().path) && !quokka_domain::remote::is_device(&self.ap_ref().path);
         let on_sftp = super::remote::is_sftp(&self.ap_ref().path);
         let (dual, hidden, queue_open) = (self.settings.dual, self.settings.show_hidden, self.queue_open);
+        let quick_view = self.quick_view.is_some();
         let (regex, case) = (self.settings.regex, self.settings.case_sensitive);
         let mut out = BarOut::default();
 
@@ -158,6 +159,7 @@ impl QuokkaApp {
 
                     top_menu(ui, tr!("Вид", "View"), 270.0, |ui| {
                         out.check(ui, tr!("Две панели", "Two panes"), "F12", dual, Action::ToggleDual);
+                        out.check(ui, tr!("Быстрый просмотр", "Quick view"), "Ctrl+Q", quick_view, Action::QuickView);
                         out.check(ui, tr!("Скрытые файлы", "Hidden files"), "F11", hidden, Action::ToggleHidden);
                         out.check(ui, tr!("Очередь операций", "Operation queue"), "Ctrl+J", queue_open, Action::ToggleQueue);
                         menu_sep(ui);

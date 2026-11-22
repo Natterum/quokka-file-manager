@@ -201,6 +201,7 @@ pub fn commands() -> Vec<Command> {
         c("refresh", Action::Refresh, View, tr!("Обновить", "Refresh"), &[ctrl(Key::R)]),
         c("toggle_hidden", Action::ToggleHidden, View, tr!("Скрытые файлы", "Hidden files"), &[k(Key::F11)]),
         c("toggle_dual", Action::ToggleDual, View, tr!("Одна / две панели", "One / two panes"), &[k(Key::F12)]),
+        c("quick_view", Action::QuickView, View, tr!("Быстрый просмотр", "Quick view"), &[ctrl(Key::Q)]),
         c("queue", Action::ToggleQueue, View, tr!("Очередь операций", "Operation queue"), &[ctrl(Key::J)]),
         c("focus_search", Action::FocusSearch, View, tr!("Поиск по имени", "Search by name"), &[ctrl(Key::F)]),
         c("toggle_regex", Action::ToggleRegex, View, tr!("Регулярные выражения в поиске", "Regular expressions in search"), &[alt(Key::R)]),
