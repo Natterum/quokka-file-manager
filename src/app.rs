@@ -37,6 +37,7 @@ mod remote;
 mod updates;
 mod convert;
 mod hotkeys;
+mod quickview;
 
 const ROW_H: f32 = 28.0;
 const TABS_H: f32 = 34.0;
@@ -140,6 +141,8 @@ pub enum Action {
     Quit,
     ToggleHidden,
     ToggleDual,
+    /// The other pane shows the file under the cursor (Ctrl+Q).
+    QuickView,
     Settings,
     ConfigureColumns(usize),
     Refresh,
@@ -520,6 +523,8 @@ pub struct QuokkaApp {
     resume_find: bool,
     /// Files being dragged with the mouse inside the window.
     file_drag: Option<drag::FileDrag>,
+    /// Ctrl+Q: the pane that shows the file under the cursor instead of a folder.
+    quick_view: Option<quickview::QuickView>,
     /// Drop targets of both panes, as drawn last.
     zones: [Option<drag::DropZone>; 2],
     /// Native window handle, for dragging files out to other apps.
@@ -715,6 +720,7 @@ impl QuokkaApp {
             find: None,
             resume_find: false,
             file_drag: None,
+            quick_view: None,
             zones: [None, None],
             hwnd: 0,
             release_pointer: false,
@@ -1038,9 +1044,10 @@ impl QuokkaApp {
                 (Key::PageUp, Action::Cursor(-page)),
                 (Key::PageDown, Action::Cursor(page)),
             ];
+            // every auto-repeat of the frame counts: `consume_key` takes one press
             for (k, a) in nav {
-                if i.consume_key(Modifiers::NONE, k) {
-                    acts.push(a);
+                while i.consume_key(Modifiers::NONE, k) {
+                    acts.push(a.clone());
                 }
             }
             if !typing {
@@ -1181,7 +1188,15 @@ impl QuokkaApp {
                 self.modal = Modal::Columns(columns::ColumnsDialog::new(pane, self.settings.columns[pane].clone(), false));
             }
             Action::Settings => self.modal = Modal::Settings { group: SettingsGroup::View, filter: String::new() },
+            // with quick view on, the other pane is the preview: there is nothing to switch to
+            Action::SwitchPanel if self.quick_view.is_some() => {}
             Action::SwitchPanel => self.active = 1 - self.active,
+            Action::QuickView => {
+                self.quick_view = match self.quick_view {
+                    Some(_) => None,
+                    None => Some(quickview::QuickView::new(ctx, 1 - self.active)),
+                };
+            }
             Action::Cursor(d) => self.ap().move_cursor(d),
             Action::CursorFirst => self.ap().set_cursor(0),
             Action::CursorLast => self.ap().set_cursor(usize::MAX),
@@ -1982,7 +1997,12 @@ impl QuokkaApp {
             let mut outs = Vec::new();
             self.pane_rects = [None, None];
             self.zones = [None, None];
-            if self.settings.dual {
+            // quick view takes the other pane's place, even in single-pane mode
+            if let Some(q) = &mut self.quick_view {
+                q.side = 1 - self.active;
+            }
+            let qv_side = self.quick_view.as_ref().map(|q| q.side);
+            if self.settings.dual || qv_side.is_some() {
                 let mid = r.center().x.round();
                 ui.painter().line_segment([pos2(mid, r.top()), pos2(mid, r.bottom())], Stroke::new(1.0, BORDER));
                 let rects = [
@@ -1990,6 +2010,15 @@ impl QuokkaApp {
                     Rect::from_min_max(pos2(mid + 0.5, r.min.y), r.max),
                 ];
                 for (i, pr) in rects.into_iter().enumerate() {
+                    if Some(i) == qv_side {
+                        let panel = self.sides[1 - i].panel();
+                        let icons = self.settings.associated_icons.then_some(&mut self.file_icons);
+                        if let Some(q) = &mut self.quick_view {
+                            #[allow(deprecated)]
+                            ui.allocate_ui_at_rect(pr, |ui| q.ui(ui, pr, panel, icons));
+                        }
+                        continue;
+                    }
                     let active = self.active == i;
                     self.pane_rects[i] = Some(pr);
                     #[allow(deprecated)]
@@ -3171,6 +3200,13 @@ impl eframe::App for QuokkaApp {
         }
         if self.idle() {
             self.handle_keys(ctx);
+            // Keyboard commands run before drawing, so this very frame shows the moved
+            // cursor. Deferred to the end of the frame they used to show up only on the
+            // next input event: egui removes a consumed key from the frame's events and
+            // then sees no reason to paint again, so the list lagged a key press behind.
+            for a in std::mem::take(&mut self.actions) {
+                self.run(a, ctx);
+            }
         }
         self.menu_bar(ctx);
         self.fkey_bar(ctx);
@@ -3181,7 +3217,12 @@ impl eframe::App for QuokkaApp {
         self.queue_ui(ctx);
         self.toast_ui(ctx);
         backdrop(ctx, !matches!(self.modal, Modal::None));
-        for a in std::mem::take(&mut self.actions) {
+        let actions = std::mem::take(&mut self.actions);
+        if !actions.is_empty() {
+            // the result of clicks and menu commands is drawn in the next frame
+            ctx.request_repaint();
+        }
+        for a in actions {
             self.run(a, ctx);
         }
         self.focus_policy(ctx);
@@ -4192,10 +4233,12 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                         resp.clone().on_hover_text(label);
                     }
                     if resp.drag_started_by(egui::PointerButton::Primary) {
-                        // by the icon or the name: drag the files; elsewhere: selection band
+                        // by the icon or the name, or anywhere on a marked row (as in
+                        // Explorer): drag the files; elsewhere: selection band
                         let grip = ir.union(text_r).expand2(vec2(6.0, 4.0)).intersect(name_clip);
                         let draggable = !e.is_parent && !e.is_drive && !panel.selecting;
-                        if draggable && press.is_some_and(|p| grip.contains(p)) {
+                        let on_grip = press.is_some_and(|p| grip.contains(p));
+                        if draggable && (on_grip || is_marked) {
                             let sources = if panel.marked.contains(&e.path) { panel.targets() } else { vec![e.path.clone()] };
                             panel.cursor = i;
                             out.drag_start = Some(sources);

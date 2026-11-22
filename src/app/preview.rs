@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-enum Content {
+pub(super) enum Content {
     Text(String),
     Photo {
         pixels: egui::ColorImage,
@@ -42,7 +42,7 @@ impl Preview {
         let spawned = std::thread::Builder::new()
             .name("quokka-preview".into())
             .spawn(move || {
-                let result = load(&file, &flag).map_err(|e| e.to_string());
+                let result = load(&file, &flag, 4096).map_err(|e| e.to_string());
                 if !flag.load(Ordering::Relaxed) {
                     let _ = tx.send(result);
                 }
@@ -182,19 +182,18 @@ impl Preview {
     }
 }
 
-fn load(
+/// Read and decode `path`; photos larger than `max_side` px are scaled down.
+pub(super) fn load(
     path: &std::path::Path,
     cancel: &AtomicBool,
+    max_side: u32,
 ) -> Result<(Content, String), Box<dyn std::error::Error>> {
     let ext = path
         .extension()
         .unwrap_or_default()
         .to_string_lossy()
         .to_ascii_lowercase();
-    let photo = matches!(
-        ext.as_str(),
-        "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "ico"
-    );
+    let photo = is_photo_extension(&ext);
     if !photo && !is_text_extension(&ext) {
         return Err(unsupported_text_preview().into());
     }
@@ -224,9 +223,9 @@ fn load(
         }
         let dimensions = (image.width(), image.height());
         // Bound GPU memory and texture dimensions independently of decoder limits.
-        let reduced = dimensions.0 > 4096 || dimensions.1 > 4096;
+        let reduced = dimensions.0 > max_side || dimensions.1 > max_side;
         if reduced {
-            image = image.thumbnail(4096, 4096);
+            image = image.thumbnail(max_side, max_side);
         }
         if cancel.load(Ordering::Relaxed) {
             return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
@@ -239,7 +238,7 @@ fn load(
         let info = format!(
             "{}{}",
             format_size(total),
-            if reduced {
+            if reduced && max_side >= 4096 {
                 tr!(" · уменьшено до 4096 px", " · reduced to 4096 px")
             } else {
                 ""
@@ -272,7 +271,11 @@ fn unsupported_text_preview() -> std::io::Error {
     )
 }
 
-fn is_text_extension(ext: &str) -> bool {
+pub(super) fn is_photo_extension(ext: &str) -> bool {
+    matches!(ext, "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "ico")
+}
+
+pub(super) fn is_text_extension(ext: &str) -> bool {
     matches!(
         ext,
         "" | "txt"
@@ -394,7 +397,7 @@ mod tests {
             .save(&path)
             .unwrap();
         let cancel = AtomicBool::new(false);
-        match load(&path, &cancel).unwrap().0 {
+        match load(&path, &cancel, 4096).unwrap().0 {
             Content::Photo { pixels, dimensions } => {
                 assert_eq!(dimensions, (32, 16));
                 assert_eq!(pixels.size, [32, 16]);
@@ -413,14 +416,14 @@ mod tests {
             .unwrap();
         writer.finish().unwrap();
         assert!(matches!(
-            load(&archive.join("photos/photo.png"), &cancel).unwrap().0,
+            load(&archive.join("photos/photo.png"), &cancel, 4096).unwrap().0,
             Content::Photo {
                 dimensions: (32, 16),
                 ..
             }
         ));
         fs::write(&path, b"invalid image").unwrap();
-        assert!(load(&path, &cancel).is_err());
+        assert!(load(&path, &cancel, 4096).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -430,11 +433,11 @@ mod tests {
             std::env::temp_dir().join(format!("quokka-preview-text-{}.txt", std::process::id()));
         let cancel = AtomicBool::new(false);
         fs::write(&path, "Текст").unwrap();
-        assert!(matches!(load(&path, &cancel).unwrap().0, Content::Text(text) if text == "Текст"));
+        assert!(matches!(load(&path, &cancel, 4096).unwrap().0, Content::Text(text) if text == "Текст"));
         fs::write(&path, b"\0abc").unwrap();
-        assert!(load(&path, &cancel).is_err());
+        assert!(load(&path, &cancel, 4096).is_err());
         cancel.store(true, Ordering::Relaxed);
-        assert!(load(&path, &cancel).is_err());
+        assert!(load(&path, &cancel, 4096).is_err());
         fs::remove_file(path).unwrap();
     }
 
@@ -457,7 +460,7 @@ mod tests {
             let path = root.join(name);
             // Unsupported formats must be rejected even with text-like or empty content.
             fs::write(&path, b"plain text").unwrap();
-            assert!(load(&path, &cancel).is_err(), "{name}");
+            assert!(load(&path, &cancel, 4096).is_err(), "{name}");
         }
         let archive = root.join("files.zip");
         let mut writer = quokka_infra::zip::ZipWriter::create(&archive).unwrap();
@@ -471,11 +474,11 @@ mod tests {
                 .unwrap();
         }
         writer.finish().unwrap();
-        assert!(load(&archive, &cancel).is_err());
-        assert!(load(&archive.join("nested.zip"), &cancel).is_err());
-        assert!(load(&archive.join("binary.txt"), &cancel).is_err());
+        assert!(load(&archive, &cancel, 4096).is_err());
+        assert!(load(&archive.join("nested.zip"), &cancel, 4096).is_err());
+        assert!(load(&archive.join("binary.txt"), &cancel, 4096).is_err());
         assert!(
-            matches!(load(&archive.join("readme.txt"), &cancel).unwrap().0, Content::Text(text) if text == "Текст")
+            matches!(load(&archive.join("readme.txt"), &cancel, 4096).unwrap().0, Content::Text(text) if text == "Текст")
         );
         fs::remove_dir_all(root).unwrap();
     }

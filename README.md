@@ -33,38 +33,34 @@ The executable is named `quokka`; the window is titled “Quokka File Manager”
 
 ## Features
 
-- 🪟 **Two panes** (or one, toggled with F12), each with multiple tabs.
-- 💻 **Virtual “This PC” view** listing drives and free space on Windows.
-- ⭐ **Sidebar shortcuts** to Home, Desktop, Documents, Downloads, Pictures, Music, Videos (including folders within OneDrive), and drives.
-- 🧭 **Breadcrumb navigation** in the path bar; double-click or press `Ctrl+L` to enter a path manually.
-- ↩️ **Back/forward navigation history** for each tab.
-- 📊 **Configurable columns**: Name, Modified, Size, Type, Created, Accessed, Extension, and Attributes. Right-click a header → “Configure columns…” or open “Settings → View and files” to display a separate window. Drag a row by ⋮⋮ to reorder it, use checkboxes to choose columns, and click “Apply”. “Cancel” keeps the previous settings. Name is always visible; column selection, order, and widths are saved separately for each pane. Unavailable dates (for example, inside ZIP archives) appear as “—”. When resizing a pane, only Name shrinks; other columns keep their widths, with horizontal scrolling when needed. Headers are shortened with `...`; tooltips show their full names.
-- 🔃 **Sorting** by name, modification date, size, or type by clicking a column header.
-- 🔍 **Search by name** in the current folder through a modal opened with `Ctrl+F` or “Edit → Search by name…”.
-- ✅ **File selection** with the keyboard or mouse, including the total size of selected items.
-- ⚙️ **Background copy, move, and delete operations**, with progress and cancellation (`Esc`).
-- 👁️ **Viewer** (F3): PNG/JPEG/BMP/GIF/WebP/ICO images with Fit and zoom controls, and UTF-8 text files (the first 512 KB). Archives, binary files, and unsupported formats display an error. Reading and decoding run in the background; viewing also works inside ZIP archives.
-- 🗜️ **Browse ZIP archives as folders**: Enter or double-click opens an archive in the current tab, including nested and empty folders. `..` / Backspace goes up one level, F3 views a file, and F5 extracts selected files and folders through the operation queue. Archives are read-only; ZIP64, 7z, and nested archives are not yet supported.
-- 🖼️ **Batch image conversion** (`Ctrl+Shift+E`, context menu): convert marked images and folders (recursively) to JPEG, PNG, WebP (lossy or lossless), AVIF, BMP, TIFF, GIF, ICO, TGA or QOI with a quality setting. By default each result is saved next to its original with an editable name suffix (`photo.png` → `photo_conv.webp`); a destination folder (keeping subfolders) is optional. The dialog estimates the resulting size from a few sample files. Runs in parallel through the operation queue; EXIF orientation is applied, existing files are skipped unless overwrite is checked.
-- ⌨️ **Terminal in the current folder** (`Ctrl+Shift+P`, Tools menu): PowerShell on Windows, Terminal on macOS, and `x-terminal-emulator` on Linux. Inside a ZIP archive, opens the folder containing the archive.
-- 🎯 **Select by mask** (`Ctrl+S`), deselect by mask (`Ctrl+Shift+S`), and invert selection (`Ctrl+Shift+I`). Supports `*`, `?`, and multiple masks separated by `;`, such as `*.jpg;*.png`. Matching is case-insensitive and applies to visible items, including folders.
-- 📝 **External editor** (F4): opens the file in the program configured in settings (Notepad on Windows by default, `$VISUAL`/`$EDITOR` on other systems).
-- ✏️ **Built-in editor** (Shift+F4): UTF-8 files up to 4 MB, with an unsaved-changes warning.
-- 🎨 **Windows file association icons**: a persistent toggle in Settings → View and files, applied to panes and search results.
-- 🌈 **Colored file type icons** for documents, images, video, audio, archives, code, and executables.
-- 🙈 **Show hidden files** (F11).
-- 🔄 **Background folder loading and automatic refresh**: large and network folders do not freeze the window; open folders update when their contents change on disk.
-- 📏 **Folder sizes** (Alt+Enter): background calculation with cancellation; see [below](#folder-sizes).
-- 🏷️ **Batch rename** (Ctrl+M) with Total Commander masks, live preview, conflict checks, and undo; see [below](#batch-rename-ctrlm).
-- 💾 **Session persistence**: tabs in both panes reopen on the next launch.
-- 📌 **System tray icon**, minimize to tray on close, and single-window mode (launching again shows the existing window), available in Settings → View and files.
-- 🌐 **SFTP, FTP, and FTPS servers** (`Ctrl+K`, Tools → Connect to a server): a server folder opens in a pane tab like a local one. Saved connections, password or key-file login (an empty password tries the keys in `~/.ssh`), and server key fingerprint confirmation recorded in `known_hosts`. Remembered passwords are kept in the Windows Credential Manager, never in the settings file. Copy, move, and delete go through the operation queue: download, upload, and server to server. On an SFTP server, `Ctrl+Shift+P` opens an SSH terminal in PuTTY or the Windows `ssh.exe`.
-- 📋 **Windows Properties** (`Ctrl+Alt+Enter`, context menu → Properties): the standard Explorer property sheet for the file, folder, or drive under the cursor; several selected items open one combined sheet. “Folder properties” in the empty-area menu shows the current folder.
-- 🖱️ **Windows context menu** (`Shift+F10`, context menu → Show Windows menu): the full Explorer menu for the selected items or the empty area of a folder, including commands added by installed programs; hold Shift for extended commands.
-- 💽 **Drives in the sidebar**: a usage bar on each drive, a tooltip with used, free and total space that refreshes every second while hovered, and a right-click menu with Open, Open in new tab, Add to favorites, Eject, Show Windows menu and Properties.
-- 🔌 **New devices**: plugged-in USB drives, memory cards, mounted images and mapped network drives appear on their own, with an in-app notification offering to open them.
-- ⌨️ **Custom keyboard shortcuts** (Settings → Keyboard shortcuts): record a new combination, add or remove extra ones, and reset one command or all of them. Assigning a combination that is already taken asks first and then moves it from the other command. Menus, the F-key bar and the help screen show the current keys.
-- ⬆️ **Updates**: once a day at startup (Settings → View and files → Updates) and on demand (Help → Check for updates…), Quokka asks GitHub Releases for a newer version, shows its release notes, and offers to update. “Update and restart” downloads the package, verifies its SHA-256 checksum, installs it, and restarts Quokka with the same tabs: an MSI installation runs the new MSI, a portable copy replaces `quokka.exe` in place. “Skip this version” stops the automatic reminder for that version.
+### Browsing
+- 🪟 **Two panes with tabs** — or one pane, switch with F12.
+- 🧭 **Easy navigation** — clickable path bar, back and forward, quick links to Desktop, Downloads, Pictures and your drives in the sidebar.
+- 🔍 **Search** — filter the current folder by name (`Ctrl+F`) or find files anywhere, even by the text inside them (`Alt+F7`).
+- 📊 **Columns you choose** — name, date, size, type and more; sort by clicking a column.
+- 💾 **Remembers your tabs** — everything reopens the next time you start Quokka.
+
+### Looking at files
+- ⚡ **Quick view** (`Ctrl+Q`) — the other pane shows the picture or text file under the cursor. Flip through photos with the arrow keys.
+- 👁️ **Viewer** (F3) — open pictures and text files without leaving Quokka; zoom in and out.
+- 📝 **Edit** — F4 opens your editor (Notepad by default), Shift+F4 a simple built-in one.
+
+### Working with files
+- 📁 **Copy, move, delete** — with F5, F6, F8, `Ctrl+C` / `Ctrl+V` or drag and drop, also to and from other programs. Big jobs run in the background, and you can pause or cancel them.
+- ↩️ **Undo** (`Ctrl+Z`) — bring back deleted files, undo a move or a rename.
+- 🏷️ **Rename many files at once** (`Ctrl+M`) — see the new names before anything changes. [More below](#batch-rename-ctrlm).
+- 🖼️ **Convert pictures** (`Ctrl+Shift+E`) — to JPEG, PNG, WebP and other formats, many at once.
+- 🗜️ **ZIP archives** — open them like folders and take out what you need; pack files into a new ZIP.
+- 📏 **Folder sizes** (`Alt+Enter`) — see how much space each folder takes. [More below](#folder-sizes).
+- 🎯 **Select by pattern** — for example, all `*.jpg` files at once (`Ctrl+S`).
+
+### Fits into Windows
+- 🖱️ **The usual Windows menu and Properties** — every command you know from Explorer is one click away.
+- 💽 **Drives and devices** — free space at a glance; USB sticks, memory cards and phones show up as soon as you plug them in.
+- 🌐 **Servers** (`Ctrl+K`) — open folders on SFTP and FTP servers like ordinary ones. Passwords are stored safely by Windows.
+- 📌 **Tray icon** — keep Quokka running in the background.
+- ⌨️ **Your own shortcuts** — change any keyboard shortcut in Settings.
+- ⬆️ **Updates itself** — tells you when a new version is out and installs it in one click.
 
 ## Installation
 
@@ -175,6 +171,7 @@ The primary platform is **Windows**, using Segoe UI / Consolas fonts, drives `C:
 | F10 | Exit |
 | F11 | Show/hide hidden files |
 | F12 | Toggle one/two panes |
+| Ctrl+Q | Quick view of the file under the cursor in the other pane |
 
 ### Navigation and selection
 
