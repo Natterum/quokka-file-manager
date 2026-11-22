@@ -126,6 +126,13 @@ pub enum Glyph {
     Unpack,
     Info,
     Terminal,
+    /// Four panes: the Windows shell menu.
+    Windows,
+    /// Removable (USB) drive.
+    Usb,
+    Keyboard,
+    /// A phone or other portable device (MTP).
+    Phone,
 }
 
 impl Glyph {
@@ -446,6 +453,31 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.rect_stroke(Rect::from_min_max(at(0.1, 0.18), at(0.9, 0.82)), 2.5, s);
             p.add(Shape::line(vec![at(0.26, 0.38), at(0.42, 0.52), at(0.26, 0.66)], s));
             p.line_segment([at(0.5, 0.66), at(0.72, 0.66)], s);
+        }
+        Glyph::Windows => {
+            for (x, y) in [(0.16, 0.16), (0.53, 0.16), (0.16, 0.53), (0.53, 0.53)] {
+                p.rect_stroke(Rect::from_min_size(at(x, y), vec2(w * 0.31, r.height() * 0.31)), 1.5, s);
+            }
+        }
+        Glyph::Usb => {
+            // plug body and the connector with its two contacts
+            p.rect_stroke(Rect::from_min_max(at(0.3, 0.38), at(0.7, 0.9)), 2.5, s);
+            p.rect_stroke(Rect::from_min_max(at(0.38, 0.1), at(0.62, 0.38)), 1.0, s);
+            p.line_segment([at(0.45, 0.2), at(0.45, 0.27)], s);
+            p.line_segment([at(0.55, 0.2), at(0.55, 0.27)], s);
+        }
+        Glyph::Phone => {
+            p.rect_stroke(Rect::from_min_max(at(0.28, 0.08), at(0.72, 0.92)), 3.0, s);
+            p.line_segment([at(0.44, 0.8), at(0.56, 0.8)], s);
+        }
+        Glyph::Keyboard => {
+            p.rect_stroke(Rect::from_min_max(at(0.08, 0.24), at(0.92, 0.76)), 2.5, s);
+            for y in [0.4, 0.53] {
+                for x in [0.24, 0.38, 0.52, 0.66, 0.8] {
+                    p.circle_filled(at(x - 0.02, y), w * 0.035, c);
+                }
+            }
+            p.line_segment([at(0.3, 0.65), at(0.7, 0.65)], s);
         }
     }
 }

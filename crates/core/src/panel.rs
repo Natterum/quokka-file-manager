@@ -190,7 +190,9 @@ impl Panel {
     /// Start reading the listing. `keep` — keep showing the current rows meanwhile
     /// (a refresh of the same folder); otherwise the list is emptied at once.
     fn load(&mut self, keep: bool) {
-        self.folder_sizes.clear();
+        if !keep {
+            self.folder_sizes.clear();
+        }
         self.error = None;
         self.stale = false;
         self.changed.store(false, Ordering::Relaxed);
@@ -228,6 +230,15 @@ impl Panel {
     fn apply(&mut self, l: Loaded) {
         let keep_path = self.after.keep.take().or_else(|| self.current().map(|e| e.path.clone()));
         self.all = l.entries;
+        // a refresh of the same folder (often triggered by unrelated changes on disk)
+        // keeps the folder sizes already calculated and the scans still running
+        if !self.folder_sizes.sizes.is_empty() {
+            for e in self.all.iter_mut().filter(|e| e.is_dir && !e.is_parent) {
+                if let Some(size) = self.folder_sizes.sizes.get(&e.path) {
+                    e.size = size.bytes;
+                }
+            }
+        }
         self.dirs = l.dirs;
         self.files = l.files;
         self.bytes = l.bytes;
@@ -706,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_sizes_are_per_tab_sortable_and_cleared_on_reload() {
+    fn folder_sizes_are_per_tab_sortable_and_survive_refresh() {
         let fs = FakeFs::new();
         fs.file("/r/small/a", 1);
         fs.file("/r/large/nested/a", 5);
@@ -729,10 +740,35 @@ mod tests {
         assert_eq!(folders[0].name, "small");
         assert_eq!(folders[1].size, 5);
         assert_eq!(left.current().unwrap().name, "small");
+        // a refresh (e.g. after a change on disk) keeps the calculated sizes
         left.reload();
+        left.wait_loaded();
+        assert_eq!(left.folder_sizes.sizes.len(), 2);
+        assert_eq!(left.all.iter().find(|e| e.name == "large").unwrap().size, 5);
+        // going to another folder drops them
+        left.navigate(PathBuf::from("/r/large")).unwrap();
         left.wait_loaded();
         assert!(left.folder_sizes.sizes.is_empty());
         assert!(left.folder_sizes.pending.is_empty());
+    }
+
+    /// Regression: a refresh while sizes were being calculated cancelled the whole scan.
+    #[test]
+    fn refresh_does_not_cancel_running_size_scan() {
+        let fs = FakeFs::new();
+        fs.file("/r/a/x", 3);
+        fs.file("/r/b/y", 4);
+        let mut p = panel(&fs, "/r");
+        assert_eq!(p.calculate_sizes(true), 2);
+        p.reload();
+        p.wait_loaded();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !p.folder_sizes.pending.is_empty() {
+            p.poll_sizes();
+            assert!(Instant::now() < deadline, "folder scan was lost");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(p.folder_sizes.sizes.len(), 2);
     }
 
     /// Regression: reloading after files vanished used stale row indices and panicked.

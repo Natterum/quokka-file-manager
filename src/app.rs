@@ -13,7 +13,7 @@ use quokka_core::ports::Services;
 use quokka_core::Waker;
 use quokka_infra::fsops::StdFileOps;
 use quokka_infra::xfer;
-use quokka_domain::remote::is_remote;
+use quokka_domain::remote::{is_device, is_remote};
 use crate::theme::{self, *};
 use crate::util::*;
 use eframe::egui::{
@@ -22,8 +22,9 @@ use eframe::egui::{
 };
 use std::fs;
 use std::io::Read;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use quokka_infra::drives::{DriveInfo, DriveKind};
 use std::sync::{Arc, Mutex};
 
 mod drag;
@@ -35,6 +36,7 @@ mod columns;
 mod remote;
 mod updates;
 mod convert;
+mod hotkeys;
 
 const ROW_H: f32 = 28.0;
 const TABS_H: f32 = 34.0;
@@ -166,6 +168,17 @@ pub enum Action {
     OpenInExplorer,
     Properties,
     FolderProperties,
+    /// The Explorer context menu of the marked items (or the one under the cursor).
+    WindowsMenu,
+    /// The Explorer context menu of the empty area of the current folder.
+    FolderWindowsMenu,
+    /// The Explorer context menu / property sheet of a sidebar entry (drive, favorite).
+    WindowsMenuOf(PathBuf),
+    PropertiesOf(PathBuf),
+    /// Safely remove a USB drive or eject a disc.
+    Eject(PathBuf),
+    OpenInNewTab(PathBuf),
+    AddFavoritePath(PathBuf),
     AddCurrentFavorite,
     UndoDelete,
     FindFiles,
@@ -177,6 +190,8 @@ pub enum Action {
     Disconnect,
     CheckUpdates,
     ConvertImages,
+    /// Regular expressions in the name filter on / off (Alt+R).
+    ToggleRegex,
 }
 
 fn fkeys() -> [(Key, &'static str, Action); 12] {
@@ -250,9 +265,20 @@ enum Undo {
 struct Toast {
     text: String,
     error: bool,
-    /// Show an «Отменить» button that restores the last recycled items.
-    undo: bool,
+    /// A button next to the text (e.g. «Отменить» that restores the last recycled
+    /// items, «Открыть» for a new drive); such toasts stay longer.
+    button: Option<(String, Action)>,
     born: Option<f64>,
+}
+
+impl Toast {
+    fn new(text: impl Into<String>, error: bool) -> Toast {
+        Toast { text: text.into(), error, button: None, born: None }
+    }
+
+    fn undo(text: impl Into<String>) -> Toast {
+        Toast { button: Some((tr!("Отменить", "Undo").into(), Action::UndoDelete)), ..Toast::new(text, false) }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -260,14 +286,16 @@ enum SettingsGroup {
     View,
     Search,
     Sidebar,
+    Keys,
 }
 
 impl SettingsGroup {
-    fn all() -> [(SettingsGroup, &'static str, Glyph); 3] {
+    fn all() -> [(SettingsGroup, &'static str, Glyph); 4] {
         [
         (SettingsGroup::View, tr!("Вид и файлы", "View and files"), Glyph::Eye),
         (SettingsGroup::Search, tr!("Поиск", "Search"), Glyph::Search),
         (SettingsGroup::Sidebar, tr!("Избранное и меню", "Favorites and menu"), Glyph::Star),
+        (SettingsGroup::Keys, tr!("Горячие клавиши", "Keyboard shortcuts"), Glyph::Keyboard),
         ]
     }
 
@@ -277,6 +305,7 @@ impl SettingsGroup {
             return true;
         }
         let words = match self {
+            SettingsGroup::Keys => return hotkeys::matches(q),
             SettingsGroup::View => tr!("колонки столбцы состав порядок расположение язык интерфейса english русский вид и файлы скрытые файлы иконки значки связанных приложений окно две панели внешний редактор команда f4 f11 f12 трей область уведомлений значок закрытии скрывать сворачивать несколько окон экземпляров запуск сеанс сессия вкладки восстанавливать", "columns visibility order arrangement interface language english russian view and files hidden files icons associated applications window two panes dual external editor command f4 f11 f12 tray notification area icon close hide minimize multiple windows instances startup session tabs restore"),
             SettingsGroup::Search => tr!("поиск фильтр по имени регулярные выражения regex регистр букв ctrl+f alt+r", "search filter by name regular expressions regex case sensitive letters ctrl+f alt+r"),
             SettingsGroup::Sidebar => tr!("избранное и меню боковое меню подписи диски закладки порядок восстановить", "favorites and menu sidebar labels drives bookmarks order restore"),
@@ -466,8 +495,15 @@ pub struct QuokkaApp {
     /// Downloaded copies of server files to open once their copy job finishes.
     open_after: Vec<PathBuf>,
     drives: Vec<PathBuf>,
-    /// (total, free) bytes per drive, filled in the background for sidebar tooltips.
-    drive_space: Arc<Mutex<HashMap<PathBuf, (u64, u64)>>>,
+    /// Kind, label and (total, free) bytes per drive, read in the background for the
+    /// sidebar (a disconnected network drive can take seconds to answer).
+    drive_info: Arc<Mutex<HashMap<PathBuf, DriveInfo>>>,
+    /// Drives being read right now: at most one read per drive at a time.
+    drive_busy: Arc<Mutex<HashSet<PathBuf>>>,
+    /// When each drive was last read (the hovered one is re-read every second).
+    drive_read_at: HashMap<PathBuf, std::time::Instant>,
+    /// Notices drives being plugged in or removed.
+    drive_watch: Option<quokka_infra::drives::DriveWatch>,
     /// The infrastructure adapters every tab works with.
     services: Services,
     actions: Vec<Action>,
@@ -515,13 +551,15 @@ fn path_edit_id(idx: usize) -> Id {
 
 fn clipboard_actions(events: &mut Vec<egui::Event>, modifiers: Modifiers) -> Vec<Action> {
     let mut actions = Vec::new();
+    let shift_del = hotkeys::with(|m| m.action_for(&hotkeys::Combo::new(false, false, true, Key::Delete)));
     events.retain(|event| {
         let action = match event {
             egui::Event::Copy => Some(Action::ClipboardCopy),
             // On Windows egui-winit turns Shift+Del (a legacy "cut" shortcut) into
             // `Event::Cut` and drops the key event, so the Shift+Delete binding never fires.
             // In the file list Shift+Del means "delete permanently", like in Explorer.
-            egui::Event::Cut if modifiers.shift && !modifiers.command => Some(Action::DeletePermanent),
+            // It does whatever Shift+Del is assigned to (by default "delete permanently").
+            egui::Event::Cut if modifiers.shift && !modifiers.command => shift_del.clone(),
             egui::Event::Cut => Some(Action::ClipboardCut),
             egui::Event::Paste(_) => Some(Action::ClipboardPaste),
             egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.command => match key {
@@ -615,6 +653,7 @@ impl QuokkaApp {
         theme::apply(&cc.egui_ctx);
         let home = config::home();
         let settings = Settings::load();
+        hotkeys::install(hotkeys::Keymap::with_overrides(&settings.hotkeys));
         let services = quokka_infra::services(waker(&cc.egui_ctx));
         let drives = services.fs.drives();
         let right_start = drives.first().cloned().unwrap_or_else(|| home.clone());
@@ -657,8 +696,14 @@ impl QuokkaApp {
             toast: None,
             undo: None,
             open_after: Vec::new(),
+            drive_watch: Some(quokka_infra::drives::DriveWatch::start(std::time::Duration::from_millis(700), {
+                let waker = services.waker.clone();
+                move || waker.wake()
+            })),
             drives,
-            drive_space: Default::default(),
+            drive_info: Default::default(),
+            drive_busy: Default::default(),
+            drive_read_at: HashMap::new(),
             services,
             actions: Vec::new(),
             search_id: Id::new("search-box"),
@@ -687,19 +732,88 @@ impl QuokkaApp {
         app
     }
 
-    /// Read free space of every drive on a background thread (a disconnected
-    /// network drive can take seconds to answer).
-    fn refresh_drive_space(&self) {
-        let (fs, drives, out, waker) =
-            (self.services.fs.clone(), self.drives.clone(), self.drive_space.clone(), self.services.waker.clone());
+    /// Re-read every drive's label and space in the background.
+    fn refresh_drive_space(&mut self) {
+        for d in self.drives.clone() {
+            self.refresh_drive(&d);
+        }
+    }
+
+    /// Re-read one drive's label and space on a background thread, unless a read of
+    /// it is still running (a dead network drive must not pile up threads).
+    fn refresh_drive(&mut self, d: &Path) {
+        if !self.drive_busy.lock().unwrap_or_else(|e| e.into_inner()).insert(d.to_path_buf()) {
+            return;
+        }
+        self.drive_read_at.insert(d.to_path_buf(), std::time::Instant::now());
+        let (d, out, busy, waker) = (d.to_path_buf(), self.drive_info.clone(), self.drive_busy.clone(), self.services.waker.clone());
         std::thread::spawn(move || {
-            for d in drives {
-                if let Some(space) = fs.disk_space(&d) {
-                    out.lock().unwrap_or_else(|e| e.into_inner()).insert(d, space);
-                    waker.wake();
-                }
+            let info = quokka_infra::drives::info(&d);
+            let changed = {
+                let mut map = out.lock().unwrap_or_else(|e| e.into_inner());
+                map.insert(d.clone(), info.clone()) != Some(info)
+            };
+            busy.lock().unwrap_or_else(|e| e.into_inner()).remove(&d);
+            if changed {
+                waker.wake();
             }
         });
+    }
+
+    fn drive(&self, d: &Path) -> Option<DriveInfo> {
+        self.drive_info.lock().unwrap_or_else(|e| e.into_inner()).get(d).cloned()
+    }
+
+    /// Sidebar / notification name of a drive: «KINGSTON (E:)», «Локальный диск (C:)».
+    fn drive_title(&self, d: &Path) -> String {
+        let letter = root_label(d);
+        if is_device(d) {
+            // a phone or camera: Windows' name for it is the whole title
+            return letter;
+        }
+        match self.drive(d) {
+            Some(i) if !i.label.is_empty() => format!("{} ({letter})", i.label),
+            Some(i) => format!("{} ({letter})", drive_kind_name(i.kind)),
+            None => format!("{} ({letter})", drive_kind_name(quokka_infra::drives::kind(d))),
+        }
+    }
+
+    /// Pick up drives plugged in or removed since the last frame.
+    fn poll_drives(&mut self) {
+        let Some(change) = self.drive_watch.as_ref().and_then(|w| w.poll()) else { return };
+        self.drives = self.services.fs.drives();
+        {
+            let mut map = self.drive_info.lock().unwrap_or_else(|e| e.into_inner());
+            for d in &change.removed {
+                map.remove(d);
+            }
+        }
+        for d in &change.added {
+            self.refresh_drive(d);
+        }
+        // tabs on a drive that is gone fall back to «This PC»
+        for si in 0..2 {
+            for p in &mut self.sides[si].tabs {
+                if !p.is_pc() && change.removed.iter().any(|r| on_drive(&p.path, r)) {
+                    let _ = p.navigate(PathBuf::new());
+                }
+            }
+        }
+        self.reload_dirs(&[]);
+        if change.initial {
+            // devices that were already there when Quokka started
+        } else if let Some(d) = change.added.first() {
+            // the label is not known yet: name the device by its kind and letter
+            let text = if is_device(d) {
+                trf!("Подключено устройство: {}", "Device connected: {}", root_label(d))
+            } else {
+                let kind = drive_kind_name(quokka_infra::drives::kind(d));
+                trf!("Подключено устройство: {} ({})", "Device connected: {} ({})", kind, root_label(d))
+            };
+            self.toast = Some(Toast { button: Some((tr!("Открыть", "Open").into(), Action::GoTo(d.clone()))), ..Toast::new(text, false) });
+        } else if let Some(d) = change.removed.first() {
+            self.toast(trf!("Устройство {} отключено", "Device {} removed", root_label(d)), false);
+        }
     }
 
     fn ap(&mut self) -> &mut Panel {
@@ -726,7 +840,7 @@ impl QuokkaApp {
     }
 
     fn toast(&mut self, text: impl Into<String>, error: bool) {
-        self.toast = Some(Toast { text: text.into(), error, undo: false, born: None });
+        self.toast = Some(Toast::new(text, error));
     }
 
     fn report(&mut self, r: Result<(), String>) {
@@ -907,65 +1021,14 @@ impl QuokkaApp {
     // ───────────────────────────── input ─────────────────────────────
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::R)) {
-            self.settings.regex = !self.settings.regex;
-            self.sync_settings();
-            self.save_settings();
-        }
         let typing = self.text_focus(ctx);
         let page = ((self.ap_ref().view_height / ROW_H) as isize - 1).max(1);
         let mut acts = Vec::new();
         let mut side = None;
         ctx.input_mut(|i| {
-            // egui matches modifiers loosely: `consume_key(NONE, F7)` also eats Alt+F7.
-            // So combos with Alt/Shift must be consumed before the plain keys.
-            let modified = [
-                (Modifiers::COMMAND | Modifiers::SHIFT, Key::I, Action::InvertSelection),
-                (Modifiers::COMMAND | Modifiers::SHIFT, Key::S, Action::UnselectMask),
-                (Modifiers::COMMAND | Modifiers::SHIFT, Key::P, Action::OpenTerminal),
-                (Modifiers::COMMAND | Modifiers::SHIFT, Key::E, Action::ConvertImages),
-                (Modifiers::ALT, Key::F5, Action::Zip),
-                (Modifiers::ALT, Key::F6, Action::Unzip),
-                (Modifiers::ALT, Key::F7, Action::FindFiles),
-                // before Alt+Enter, which would otherwise also match Ctrl+Alt+Enter
-                (Modifiers::COMMAND | Modifiers::ALT, Key::Enter, Action::Properties),
-                (Modifiers::ALT, Key::Enter, Action::CalculateSizes),
-                (Modifiers::SHIFT, Key::F4, Action::EditBuiltin),
-                (Modifiers::SHIFT, Key::F8, Action::DeletePermanent),
-            ];
-            for (m, k, a) in modified {
-                if i.consume_key(m, k) {
-                    acts.push(a);
-                }
-            }
-            for (k, _, a) in fkeys() {
-                if i.consume_key(Modifiers::NONE, k) {
-                    acts.push(a);
-                }
-            }
-            let combos = [
-                (Modifiers::COMMAND, Key::S, Action::SelectMask),
-                (Modifiers::COMMAND, Key::R, Action::Refresh),
-                (Modifiers::COMMAND, Key::F, Action::FocusSearch),
-                (Modifiers::COMMAND, Key::T, Action::NewTab),
-                (Modifiers::COMMAND, Key::W, Action::CloseTab),
-                (Modifiers::COMMAND, Key::L, Action::EditPath),
-                (Modifiers::COMMAND, Key::D, Action::AddFavorite),
-                (Modifiers::COMMAND, Key::Z, Action::UndoDelete),
-                (Modifiers::COMMAND, Key::M, Action::MultiRename),
-                (Modifiers::COMMAND, Key::K, Action::Connect),
-                (Modifiers::ALT, Key::ArrowLeft, Action::Back),
-                (Modifiers::ALT, Key::ArrowRight, Action::Forward),
-                (Modifiers::ALT, Key::ArrowUp, Action::GoUp),
-            ];
-            for (m, k, a) in combos {
-                if i.consume_key(m, k) {
-                    acts.push(a);
-                }
-            }
-            if i.consume_key(Modifiers::COMMAND, Key::J) {
-                acts.push(Action::ToggleQueue);
-            }
+            // the user's shortcuts first, matched exactly: egui's `consume_key` matches
+            // modifiers loosely (`NONE, ArrowUp` would also eat Alt+↑)
+            acts.extend(hotkeys::take_actions(&mut i.events, typing));
             if i.consume_key(Modifiers::NONE, Key::Tab) {
                 acts.push(Action::SwitchPanel);
             }
@@ -990,10 +1053,7 @@ impl QuokkaApp {
                     (Modifiers::NONE, Key::Backspace, Action::GoUp),
                     (Modifiers::NONE, Key::Insert, Action::MarkMove),
                     (Modifiers::NONE, Key::Space, Action::Mark),
-                    (Modifiers::COMMAND, Key::A, Action::MarkAll),
                     (Modifiers::NONE, Key::Escape, Action::ClearMarks),
-                    (Modifiers::SHIFT, Key::Delete, Action::DeletePermanent),
-                    (Modifiers::NONE, Key::Delete, Action::Delete),
                 ];
                 for (m, k, a) in keys {
                     if i.consume_key(m, k) {
@@ -1044,6 +1104,12 @@ impl QuokkaApp {
         }
         // a server folder we are not logged in to (favorite, typed path, history): log in first
         if let Action::GoTo(p) = &a {
+            if let Some((site, _)) = quokka_domain::remote::split(p).filter(|_| is_device(p)) {
+                if !quokka_infra::net::is_connected(&site) {
+                    self.toast(trf!("Устройство «{}» не подключено", "Device “{}” is not connected", site.host), true);
+                    return;
+                }
+            }
             if quokka_domain::remote::split(p).is_some_and(|(site, _)| !quokka_infra::net::is_connected(&site)) {
                 let p = p.clone();
                 self.open_connect(Some(&p));
@@ -1053,7 +1119,8 @@ impl QuokkaApp {
         if quokka_infra::archive::location(&self.ap_ref().path).is_some() && matches!(a,
             Action::Rename | Action::MultiRename | Action::Move | Action::Delete | Action::DeletePermanent |
             Action::Edit | Action::EditBuiltin | Action::MkDir | Action::NewFile | Action::CreateWindows |
-            Action::ClipboardCut | Action::ClipboardCopy | Action::ClipboardPaste | Action::Zip | Action::Unzip | Action::FindFiles | Action::ConvertImages) {
+            Action::ClipboardCut | Action::ClipboardCopy | Action::ClipboardPaste | Action::Zip | Action::Unzip | Action::FindFiles | Action::ConvertImages |
+            Action::WindowsMenu | Action::FolderWindowsMenu) {
             self.toast(tr!("Архив открыт только для чтения. F5 — извлечь выбранное.", "Archive is read-only. F5 extracts selected items."), true);
             return;
         }
@@ -1201,6 +1268,11 @@ impl QuokkaApp {
                 }
             }
             Action::CheckUpdates => self.check_updates_now(),
+            Action::ToggleRegex => {
+                self.settings.regex = !self.settings.regex;
+                self.sync_settings();
+                self.save_settings();
+            }
             Action::Properties | Action::FolderProperties => {
                 let p = self.ap_ref();
                 let mut paths = if matches!(a, Action::Properties) { p.targets() } else { Vec::new() };
@@ -1220,6 +1292,67 @@ impl QuokkaApp {
                 }
                 if let Err(e) = quokka_infra::shell_props::show(&paths) {
                     self.toast(trf!("Не удалось открыть свойства: {e}", "Could not open properties: {e}"), true);
+                }
+            }
+            Action::WindowsMenuOf(path) => {
+                let path = shell_name(&path);
+                #[cfg(windows)]
+                match quokka_infra::shell_menu::show(self.hwnd, &[path.clone()], &path) {
+                    Ok(quokka_infra::shell_menu::Picked::Done) => self.refresh_drive_space(),
+                    Ok(_) => {}
+                    Err(e) => self.toast(trf!("Не удалось показать меню Windows: {e}", "Could not show the Windows menu: {e}"), true),
+                }
+                #[cfg(not(windows))]
+                let _ = path;
+            }
+            Action::PropertiesOf(path) => {
+                if let Err(e) = quokka_infra::shell_props::show(&[shell_name(&path)]) {
+                    self.toast(trf!("Не удалось открыть свойства: {e}", "Could not open properties: {e}"), true);
+                }
+            }
+            Action::Eject(path) => {
+                // leave the drive in every tab so Windows can lock the volume
+                for si in 0..2 {
+                    for p in &mut self.sides[si].tabs {
+                        if p.path.starts_with(&path) {
+                            let _ = p.navigate(PathBuf::new());
+                        }
+                    }
+                }
+                #[cfg(windows)]
+                if let Err(e) = quokka_infra::shell_menu::invoke_verb(self.hwnd, &path, "eject") {
+                    self.toast(trf!("Не удалось извлечь {}: {e}", "Could not eject {}: {e}", root_label(&path)), true);
+                }
+            }
+            Action::OpenInNewTab(path) => self.open_in_new_tab(path),
+            Action::AddFavoritePath(path) => self.place_op(PlaceOp::AddPath(path), false),
+            Action::WindowsMenu | Action::FolderWindowsMenu => {
+                #[cfg(windows)]
+                {
+                    let p = self.ap_ref();
+                    let mut items = Vec::new();
+                    if a == Action::WindowsMenu {
+                        items = p.targets();
+                        if items.is_empty() {
+                            if let Some(e) = p.current().filter(|e| e.is_drive) {
+                                items.push(e.path.clone());
+                            }
+                        }
+                    }
+                    if items.is_empty() && p.is_pc() {
+                        return;
+                    }
+                    let folder = p.path.clone();
+                    match quokka_infra::shell_menu::show(self.hwnd, &items, &folder) {
+                        Ok(quokka_infra::shell_menu::Picked::Rename) => self.run(Action::Rename, ctx),
+                        Ok(quokka_infra::shell_menu::Picked::Done) => {
+                            if !folder.as_os_str().is_empty() {
+                                self.reload_dirs(&[folder]);
+                            }
+                        }
+                        Ok(quokka_infra::shell_menu::Picked::None) => {}
+                        Err(e) => self.toast(trf!("Не удалось показать меню Windows: {e}", "Could not show the Windows menu: {e}"), true),
+                    }
                 }
             }
             Action::EditPath => {
@@ -1583,7 +1716,7 @@ impl QuokkaApp {
                 }
                 None => false,
             };
-            self.toast = Some(Toast { text, error, undo, born: None });
+            self.toast = Some(if undo { Toast { error, ..Toast::undo(text) } } else { Toast::new(text, error) });
         }
     }
 
@@ -1604,7 +1737,18 @@ impl QuokkaApp {
                 let gap = 6.0;
                 let w = (avail.width() - gap * 11.0) / 12.0;
                 let painter = ui.painter().clone();
-                for (i, (_, label, a)) in fkeys().into_iter().enumerate() {
+                // each button shows what its F-key does now (it may have been reassigned)
+                let short: Vec<(Action, &str)> = fkeys().into_iter().map(|(_, l, a)| (a, l)).collect();
+                let slots: Vec<Option<(String, Action)>> = fkeys().iter().map(|(key, _, _)| {
+                    hotkeys::with(|m| {
+                        let i = m.owner(&hotkeys::Combo::new(false, false, false, *key))?;
+                        let a = m.commands[i].action.clone();
+                        let label = short.iter().find(|(sa, _)| *sa == a).map_or(m.commands[i].name, |(_, l)| *l);
+                        Some((label.to_string(), a))
+                    })
+                }).collect();
+                for (i, slot) in slots.into_iter().enumerate() {
+                    let Some((label, a)) = slot else { continue };
                     let r = Rect::from_min_size(pos2(avail.left() + i as f32 * (w + gap), avail.top()), vec2(w, avail.height()));
                     let resp = ui.interact(r, Id::new(("fkey", i)), Sense::click());
                     if resp.hovered() {
@@ -1619,10 +1763,10 @@ impl QuokkaApp {
                         Action::ToggleDual => Some(self.settings.dual),
                         _ => None,
                     };
-                    painter.with_clip_rect(r).text(
+                    painter.with_clip_rect(r.shrink2(vec2(2.0, 0.0))).text(
                         pos2(badge.right() + 7.0, r.center().y),
                         Align2::LEFT_CENTER,
-                        label,
+                        &label,
                         regular(13.5),
                         TEXT,
                     );
@@ -1658,6 +1802,7 @@ impl QuokkaApp {
                 let looks: Vec<Look> = self.settings.places.iter().map(|pl| place_look(&mut self.icon_cache, ctx, pl)).collect();
                 let w = ui.available_width();
                 let mut op = None;
+                let mut side_actions = Vec::new();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = if labels { 4.0 } else { 8.0 };
                     let n = self.settings.places.len();
@@ -1691,6 +1836,18 @@ impl QuokkaApp {
                             if menu_item_icon(ui, Some(Glyph::ArrowDown), tr!("Переместить ниже", "Move down"), "", i + 1 < n, false).clicked() {
                                 op = Some(PlaceOp::Down(i));
                                 ui.close_menu();
+                            }
+                            let local = !place.path.as_os_str().is_empty() && (!is_remote(&place.path) || is_device(&place.path));
+                            if cfg!(windows) && local {
+                                menu_sep(ui);
+                                if menu_item_icon(ui, Some(Glyph::Windows), tr!("Показать меню Windows", "Show Windows menu"), "", true, false).clicked() {
+                                    side_actions.push(Action::WindowsMenuOf(place.path.clone()));
+                                    ui.close_menu();
+                                }
+                                if menu_item_icon(ui, Some(Glyph::Info), tr!("Свойства", "Properties"), "", true, false).clicked() {
+                                    side_actions.push(Action::PropertiesOf(place.path.clone()));
+                                    ui.close_menu();
+                                }
                             }
                             menu_sep(ui);
                             if menu_item_icon(ui, Some(Glyph::Trash), tr!("Убрать из избранного", "Remove from favorites"), "", true, true).clicked() {
@@ -1737,29 +1894,81 @@ impl QuokkaApp {
                     if self.settings.show_drives {
                         let (r, _) = ui.allocate_exact_size(vec2(w, 10.0), Sense::hover());
                         ui.painter().line_segment([pos2(r.left() + 6.0, r.center().y), pos2(r.right() - 6.0, r.center().y)], Stroke::new(1.0, BORDER));
-                        for d in &self.drives {
-                            let title = trf!("Локальный диск ({})", "Local Disk ({})", root_label(d));
-                            let space = self.drive_space.lock().unwrap_or_else(|e| e.into_inner()).get(d).copied();
-                            let tip = match space {
-                                Some((t, f)) => trf!("{title}\nСвободно {} из {}", "{title}\n{} free of {}", format_size(f), format_size(t)),
-                                None => title.clone(),
+                        let mut hovered = None;
+                        for d in self.drives.clone() {
+                            let info = self.drive(&d);
+                            let title = self.drive_title(&d);
+                            let kind = info.as_ref().map_or_else(|| quokka_infra::drives::kind(&d), |i| i.kind);
+                            let removable = matches!(kind, DriveKind::Removable | DriveKind::Optical);
+                            let glyph = match kind {
+                                DriveKind::Removable => Glyph::Usb,
+                                DriveKind::Device => Glyph::Phone,
+                                _ => Glyph::Drive,
                             };
-                            let resp = side_btn(ui, Look::glyph(Glyph::Drive), cur == *d, labels.then_some(title.as_str()), w);
-                            if !labels {
+                            let resp = side_btn(ui, Look::glyph(glyph), cur == d, labels.then_some(title.as_str()), w);
+                            // a thin usage line along the bottom of the button, as in Explorer's «This PC»
+                            if let Some(frac) = info.as_ref().and_then(|i| i.used_fraction()) {
+                                let r = resp.rect;
+                                let line = if labels {
+                                    Rect::from_min_max(pos2(r.left() + 40.0, r.bottom() - 5.0), pos2(r.right() - 10.0, r.bottom() - 2.5))
+                                } else {
+                                    Rect::from_min_max(pos2(r.left() + 9.0, r.bottom() - 4.5), pos2(r.right() - 9.0, r.bottom() - 2.0))
+                                };
+                                icons::bar(ui.painter(), line, frac, usage_color(frac));
+                            }
+                            if !labels && kind != DriveKind::Device {
                                 ui.painter().text(
-                                    resp.rect.right_bottom() - vec2(5.0, 4.0),
+                                    resp.rect.right_bottom() - vec2(5.0, 6.0),
                                     Align2::RIGHT_BOTTOM,
-                                    root_label(d).trim_end_matches(':'),
+                                    root_label(&d).trim_end_matches(':'),
                                     semibold(10.0),
-                                    if cur == *d { BLUE } else { TEXT_SOFT },
+                                    if cur == d { BLUE } else { TEXT_SOFT },
                                 );
                             }
-                            if resp.on_hover_text(tip).clicked() {
+                            if resp.hovered() {
+                                hovered = Some(d.clone());
+                            }
+                            let resp = resp.on_hover_ui(|ui| drive_tooltip(ui, &title, info.as_ref()));
+                            if resp.clicked() {
                                 self.actions.push(Action::GoTo(d.clone()));
                             }
+                            let mut picked = None;
+                            resp.context_menu(|ui| {
+                                menu_style(ui, 250.0);
+                                menu_title(ui, &title);
+                                let mut item = |ui: &mut Ui, g: Glyph, text: &str, a: Action| {
+                                    if menu_item_icon(ui, Some(g), text, "", true, false).clicked() {
+                                        picked = Some(a);
+                                        ui.close_menu();
+                                    }
+                                };
+                                item(ui, Glyph::ArrowRight, tr!("Открыть", "Open"), Action::GoTo(d.clone()));
+                                item(ui, Glyph::Plus, tr!("Открыть в новой вкладке", "Open in new tab"), Action::OpenInNewTab(d.clone()));
+                                item(ui, Glyph::Star, tr!("Добавить в избранное…", "Add to favorites…"), Action::AddFavoritePath(d.clone()));
+                                if cfg!(windows) {
+                                    menu_sep(ui);
+                                    if removable {
+                                        item(ui, Glyph::Unpack, tr!("Извлечь", "Eject"), Action::Eject(d.clone()));
+                                    }
+                                    item(ui, Glyph::Windows, tr!("Показать меню Windows", "Show Windows menu"), Action::WindowsMenuOf(d.clone()));
+                                    item(ui, Glyph::Info, tr!("Свойства", "Properties"), Action::PropertiesOf(d.clone()));
+                                }
+                            });
+                            if let Some(a) = picked {
+                                self.actions.push(a);
+                            }
+                        }
+                        // while a drive is hovered its numbers are re-read every second
+                        if let Some(d) = hovered {
+                            let due = self.drive_read_at.get(&d).is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
+                            if due {
+                                self.refresh_drive(&d);
+                            }
+                            ctx.request_repaint_after(std::time::Duration::from_millis(250));
                         }
                     }
                 });
+                self.actions.extend(side_actions);
                 if let Some(op) = op {
                     self.place_op(op, false);
                 }
@@ -1828,7 +2037,7 @@ impl QuokkaApp {
                 let mut close = esc;
                 let mut regex = self.settings.regex;
                 let mut case = self.settings.case_sensitive;
-                if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::R)) {
+                if ctx.input_mut(|i| hotkeys::take_command(&mut i.events, "toggle_regex")) {
                     regex = !regex;
                 }
                 dialog(ctx, "filter", 540.0_f32.min(ctx.screen_rect().width() - 64.0), |ui| {
@@ -1879,7 +2088,8 @@ impl QuokkaApp {
                 !close
             }
             Modal::Help => {
-                let mut close = esc || ctx.input(|i| i.key_pressed(Key::F1));
+                let mut close = esc || ctx.input_mut(|i| hotkeys::take_command(&mut i.events, "help"));
+                let mut edit_keys = false;
                 let screen = ctx.screen_rect();
                 // header, mouse hint and button take about 230 px of the dialog
                 let list_h = (screen.height() - 290.0).max(120.0);
@@ -1889,31 +2099,28 @@ impl QuokkaApp {
                     // on a small screen the list scrolls instead of running off the window
                     egui::ScrollArea::vertical().id_salt("help-scroll").max_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
                         egui::Grid::new("help-grid").num_columns(4).spacing(vec2(10.0, 7.0)).show(ui, |ui| {
-                            let rows: [(&str, &str, &str, &str); 23] = [
-                                ("Ctrl+C", tr!("Копировать в буфер", "Copy to clipboard"), "Ctrl+X", tr!("Вырезать", "Cut")),
-                                ("Ctrl+S", tr!("Выделить по маске", "Select by mask"), "Ctrl+Shift+S", tr!("Снять по маске", "Deselect by mask")),
-                                ("Ctrl+Shift+I", tr!("Инверсия выделения", "Invert selection"), "Ctrl+Shift+P", tr!("Терминал", "Terminal")),
-                                ("Ctrl+V", tr!("Вставить в текущую папку", "Paste into current folder"), "", ""),
-                                ("Alt+Enter", tr!("Размеры папок", "Folder sizes"), "Ctrl+Alt+Enter", tr!("Свойства", "Properties")),
-                                ("F1", tr!("Справка", "Help"), "Tab", tr!("Другая панель", "Other pane")),
-                                ("F2", tr!("Переименовать", "Rename"), "Enter", tr!("Открыть", "Open")),
-                                ("F3", tr!("Просмотр файла", "View file"), "Backspace", tr!("Папка выше", "Parent folder")),
-                                ("F4", tr!("Во внешнем редакторе", "In external editor"), "Insert", tr!("Отметить и вниз", "Mark and move down")),
-                                ("F5", tr!("Копировать", "Copy"), "Space", tr!("Отметить", "Mark")),
-                                ("F6", tr!("Переместить", "Move"), "Ctrl+A", tr!("Отметить всё", "Mark all")),
-                                ("F7", tr!("Новая папка", "New folder"), "Esc", tr!("Снять отметки", "Clear marks")),
-                                ("F8 / Del", tr!("В корзину", "To Recycle Bin"), "Ctrl+F", tr!("Поиск", "Search")),
-                                ("Shift+Del", tr!("Удалить навсегда", "Delete permanently"), "Alt+R", tr!("Поиск по regex", "Regex search")),
-                                ("F9", tr!("Новый файл", "New file"), "Ctrl+R", tr!("Обновить", "Refresh")),
-                                ("F10", tr!("Выход", "Exit"), "Ctrl+T / W", tr!("Новая / закрыть вкладку", "New / close tab")),
-                                ("F11", tr!("Скрытые файлы", "Hidden files"), "Ctrl+L", tr!("Ввести путь", "Enter path")),
-                                ("F12", tr!("Одна / две панели", "One / two panes"), "Alt+← →", tr!("Назад / вперёд", "Back / forward")),
-                                ("Alt+F5", tr!("Создать ZIP-архив", "Create ZIP archive"), "Ctrl+D", tr!("В избранное", "To favorites")),
-                                ("Alt+F6", tr!("Распаковать ZIP", "Extract ZIP"), "Ctrl+J", tr!("Очередь операций", "Operation queue")),
-                                ("Ctrl+Z", tr!("Отменить удаление / перемещение", "Undo delete / move"), "Alt+F7", tr!("Поиск файлов", "Find files")),
-                                ("Ctrl+M", tr!("Групповое переименование", "Multi-rename"), "Ctrl+K", tr!("Подключение к серверу", "Connect to a server")),
-                                ("Ctrl+Shift+E", tr!("Конвертация изображений", "Convert images"), "", ""),
-                            ];
+                            // reassignable commands with their current keys, then the fixed keys
+                            let mut list: Vec<(String, &str)> = hotkeys::with(|m| {
+                                m.commands.iter().zip(&m.keys).filter(|(_, k)| !k.is_empty())
+                                    .map(|(c, k)| (k.iter().take(2).map(|c| c.label()).collect::<Vec<_>>().join(" / "), c.name)).collect()
+                            });
+                            list.extend([
+                                ("Enter", tr!("Открыть", "Open")),
+                                ("Tab", tr!("Другая панель", "Other pane")),
+                                ("Backspace", tr!("Папка выше", "Parent folder")),
+                                ("Insert", tr!("Отметить и вниз", "Mark and move down")),
+                                ("Space", tr!("Отметить", "Mark")),
+                                ("Esc", tr!("Снять отметки", "Clear marks")),
+                                ("Ctrl+C", tr!("Копировать в буфер", "Copy to clipboard")),
+                                ("Ctrl+X", tr!("Вырезать", "Cut")),
+                                ("Ctrl+V", tr!("Вставить в текущую папку", "Paste into current folder")),
+                            ].map(|(k, d)| (k.to_string(), d)));
+                            let half = list.len().div_ceil(2);
+                            let rows: Vec<(&str, &str, &str, &str)> = (0..half).map(|i| {
+                                let (k1, d1) = (&list[i].0, list[i].1);
+                                let (k2, d2) = list.get(half + i).map_or(("", ""), |(k, d)| (k.as_str(), *d));
+                                (k1.as_str(), d1, k2, d2)
+                            }).collect();
                             for (k1, d1, k2, d2) in rows {
                                 kbd(ui, k1);
                                 ui.label(RichText::new(d1).color(TEXT));
@@ -1934,8 +2141,15 @@ impl QuokkaApp {
                         if btn(ui, tr!("Закрыть", "Close"), BLUE, Color32::WHITE).clicked() {
                             close = true;
                         }
+                        if btn(ui, tr!("Изменить сочетания…", "Change shortcuts…"), INPUT_BG, TEXT).clicked() {
+                            edit_keys = true;
+                        }
                     });
                 });
+                if edit_keys {
+                    self.modal = Modal::Settings { group: SettingsGroup::Keys, filter: String::new() };
+                    return;
+                }
                 !close
             }
             Modal::Columns(editor) => {
@@ -1952,6 +2166,22 @@ impl QuokkaApp {
             Modal::About => self.about_ui(ctx, esc || enter),
             Modal::Settings { group, filter } => {
                 let mut close = esc;
+                let hk_id = Id::new("hotkeys-edit");
+                let mut hk: hotkeys::EditState = ctx.data(|d| d.get_temp(hk_id)).unwrap_or_default();
+                if hk.capturing() {
+                    // the recorded keys must not reach text fields or close the dialog
+                    close = false;
+                    let combo = ctx.input_mut(|i| {
+                        let c = hotkeys::captured(&i.events);
+                        i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Cut | egui::Event::Copy | egui::Event::Paste(_)));
+                        c
+                    });
+                    if let Some(c) = combo {
+                        let mut map = hotkeys::Keymap::with_overrides(&self.settings.hotkeys);
+                        hk.on_capture(c, &mut map);
+                        self.settings.hotkeys = map.overrides();
+                    }
+                }
                 let before = self.settings.clone();
                 let mut op = None;
                 let mut reset = false;
@@ -2081,6 +2311,9 @@ impl QuokkaApp {
                                         );
                                         jb_option(ui, &mut st.case_sensitive, tr!("Учитывать регистр букв", "Match letter case"), tr!("«Отчёт» и «отчёт» будут считаться разными. Кнопка «Aa» в окне поиска.", "“Report” and “report” will be treated as different. The “Aa” button in the search dialog."), &q);
                                     }
+                                    SettingsGroup::Keys => {
+                                        hotkeys::page(ui, &mut st.hotkeys, &mut hk, &q);
+                                    }
                                     SettingsGroup::Sidebar => {
                                         jb_group(ui, tr!("Боковое меню", "Sidebar"));
                                         jb_option(ui, &mut st.sidebar_labels, tr!("Показывать подписи", "Show labels"), tr!("Широкое меню с названиями вместо одних значков.", "Wide menu with names instead of icons only."), &q);
@@ -2163,6 +2396,13 @@ impl QuokkaApp {
                     });
                 });
                 ctx.data_mut(|d| d.insert_temp(sel_id, place_sel));
+                if close || *group != SettingsGroup::Keys {
+                    hk = hotkeys::EditState::default();
+                }
+                ctx.data_mut(|d| d.insert_temp(hk_id, hk));
+                if self.settings.hotkeys != before.hotkeys {
+                    hotkeys::install(hotkeys::Keymap::with_overrides(&self.settings.hotkeys));
+                }
                 if reset {
                     self.settings.places = config::default_places();
                 }
@@ -2810,10 +3050,10 @@ impl QuokkaApp {
 
     fn toast_ui(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        let mut undo = false;
+        let mut pressed = None;
         let Some(t) = &mut self.toast else { return };
         let born = *t.born.get_or_insert(now);
-        let life = if t.undo { 8.0 } else if t.error { 4.5 } else { 2.5 };
+        let life = if t.button.is_some() { 8.0 } else if t.error { 4.5 } else { 2.5 };
         if now - born > life {
             self.toast = None;
             return;
@@ -2826,7 +3066,7 @@ impl QuokkaApp {
         egui::Area::new(Id::new("toast"))
             .order(egui::Order::Tooltip)
             .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -70.0 + rise))
-            .interactable(t.undo)
+            .interactable(t.button.is_some())
             .fade_in(false)
             .show(ctx, |ui| {
                 ui.multiply_opacity(opacity);
@@ -2838,18 +3078,20 @@ impl QuokkaApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(t.text.as_str()).color(Color32::WHITE).size(14.0));
-                            if t.undo {
+                            if let Some((label, action)) = &t.button {
                                 ui.add_space(10.0);
-                                let b = sized_btn(ui, tr!("Отменить", "Undo"), Color32::from_white_alpha(28), BLUE_SOFT, Stroke::NONE);
-                                if b.on_hover_text(tr!("Отменить (Ctrl+Z)", "Undo (Ctrl+Z)")).clicked() {
-                                    undo = true;
+                                let b = sized_btn(ui, label, Color32::from_white_alpha(28), BLUE_SOFT, Stroke::NONE);
+                                let b = if *action == Action::UndoDelete { b.on_hover_text(tr!("Отменить (Ctrl+Z)", "Undo (Ctrl+Z)")) } else { b };
+                                if b.clicked() {
+                                    pressed = Some(action.clone());
                                 }
                             }
                         });
                     });
             });
-        if undo {
-            self.actions.push(Action::UndoDelete);
+        if let Some(a) = pressed {
+            self.toast = None;
+            self.actions.push(a);
             return;
         }
         if age < 0.4 || life as f32 - age < 0.4 {
@@ -2908,6 +3150,7 @@ impl eframe::App for QuokkaApp {
         }
         self.poll_queue(ctx);
         self.poll_updates();
+        self.poll_drives();
         let opening = ctx.data(|d| d.get_temp::<OpenFeedback>(open_feedback_id()));
         if let Some(opening) = opening {
             if ctx.input(|i| i.time) - opening.started >= OPEN_FEEDBACK_SECS {
@@ -3453,7 +3696,8 @@ fn empty_menu(resp: Response, panel: &mut Panel, out: &mut PaneOut) {
 fn empty_menu_items(ui: &mut Ui, panel: &mut Panel, out: &mut PaneOut, is_pc: bool) {
     {
         let mut item = |ui: &mut Ui, g: Glyph, text: &str, key: &str, enabled: bool, a: Action| {
-            let r = menu_item_icon(ui, Some(g), text, key, enabled, false);
+            let key = hotkeys::menu_key(&a, key);
+            let r = menu_item_icon(ui, Some(g), text, &key, enabled, false);
             if r.clicked() {
                 out.actions.push(a);
                 ui.close_menu();
@@ -3505,9 +3749,88 @@ fn empty_menu_items(ui: &mut Ui, panel: &mut Panel, out: &mut PaneOut, is_pc: bo
         }
         if cfg!(windows) {
             menu_sep(ui);
+            item(ui, Glyph::Windows, tr!("Показать меню Windows", "Show Windows menu"), "", !is_pc, Action::FolderWindowsMenu);
             item(ui, Glyph::Info, tr!("Свойства папки", "Folder properties"), "", !is_pc, Action::FolderProperties);
         }
     }
+}
+
+/// Whether `path` is the drive (or device) `root` or lies on it.
+fn on_drive(path: &Path, root: &Path) -> bool {
+    if is_remote(root) {
+        quokka_domain::remote::starts_with(path, root)
+    } else {
+        path.starts_with(root)
+    }
+}
+
+/// What the Windows shell calls `path`: a phone's `mtp://…` item has a shell
+/// parsing name, everything else is its own.
+fn shell_name(path: &Path) -> PathBuf {
+    if is_device(path) {
+        if let Some(p) = quokka_infra::mtp::shell_path(path) {
+            return p;
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Generic name of a drive without a volume label.
+fn drive_kind_name(kind: DriveKind) -> &'static str {
+    match kind {
+        DriveKind::Removable => tr!("Съёмный диск", "USB Drive"),
+        DriveKind::Network => tr!("Сетевой диск", "Network Drive"),
+        DriveKind::Optical => tr!("Дисковод", "Optical Drive"),
+        DriveKind::Ram => tr!("RAM-диск", "RAM Disk"),
+        DriveKind::Device => tr!("Устройство", "Device"),
+        DriveKind::Fixed | DriveKind::Unknown => tr!("Локальный диск", "Local Disk"),
+    }
+}
+
+/// Colour of a drive usage bar: blue, orange from 85 %, red from 95 % (as Explorer).
+fn usage_color(frac: f32) -> Color32 {
+    if frac >= 0.95 { RED } else if frac >= 0.85 { ORANGE } else { BLUE }
+}
+
+/// Tooltip of a drive: name, a usage bar and used / free / total.
+fn drive_tooltip(ui: &mut Ui, title: &str, info: Option<&DriveInfo>) {
+    const W: f32 = 150.0;
+    ui.set_width(W);
+    ui.spacing_mut().item_spacing.y = 3.0;
+    ui.add(egui::Label::new(RichText::new(title).font(semibold(13.0)).color(TEXT)).truncate());
+    let Some((total, free)) = info.and_then(|i| i.space) else {
+        let text = if info.is_some() { tr!("Устройство не готово", "Device not ready") } else { tr!("Чтение…", "Reading…") };
+        ui.label(RichText::new(text).color(MUTED).size(12.0));
+        return;
+    };
+    let used = total.saturating_sub(free);
+    let frac = if total > 0 { used as f32 / total as f32 } else { 0.0 };
+    // used (red) and free (blue): the amounts above, the bar, the total below
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format_size(used)).font(semibold(12.0)).color(RED)).on_hover_text(tr!("Занято", "Used"));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format_size(free)).font(semibold(12.0)).color(BLUE)).on_hover_text(tr!("Свободно", "Free"));
+        });
+    });
+    let (r, _) = ui.allocate_exact_size(vec2(W, 8.0), Sense::hover());
+    let p = ui.painter();
+    let round = r.height() / 2.0;
+    p.rect_filled(r, round, BLUE);
+    if frac > 0.0 {
+        let split = r.left() + (r.width() * frac).max(round);
+        let used_r = Rect::from_min_max(r.min, pos2(split.min(r.right()), r.bottom()));
+        let rounding = if frac >= 0.999 { Rounding::same(round) } else { Rounding { nw: round, sw: round, ne: 0.0, se: 0.0 } };
+        p.rect_filled(used_r, rounding, RED);
+    }
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tr!("занято", "used")).color(MUTED).size(11.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(tr!("свободно", "free")).color(MUTED).size(11.0));
+        });
+    });
+    ui.vertical_centered(|ui| {
+        ui.label(RichText::new(trf!("Всего {}", "Total {}", format_size(total))).color(TEXT_SOFT).size(12.0));
+    });
 }
 
 /// Begin a rubber-band selection at screen y `press_y`.
@@ -3989,16 +4312,21 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                         if !panel.folder_sizes.pending.is_empty() {
                             items.push((tr!("Отменить расчёт размеров", "Cancel size calculation"), Glyph::Close, Action::CancelSizes));
                         }
+                        if cfg!(windows) && !is_remote(&panel.path) && quokka_infra::archive::location(&panel.path).is_none() {
+                            items.push((tr!("Показать меню Windows", "Show Windows menu"), Glyph::Windows, Action::WindowsMenu));
+                        }
                         if cfg!(windows) {
                             items.push((tr!("Свойства	Ctrl+Alt+Enter", "Properties	Ctrl+Alt+Enter"), Glyph::Info, Action::Properties));
                         }
                         // a long menu in a small window scrolls instead of being cut off
                         menu_scroll(ui, |ui| for (label, g, a) in items {
-                            if matches!(a, Action::Zip | Action::Delete | Action::MkDir | Action::Mark | Action::Properties) {
+                            if matches!(a, Action::Zip | Action::Delete | Action::MkDir | Action::Mark | Action::WindowsMenu)
+                                || (a == Action::Properties && !cfg!(windows)) {
                                 menu_sep(ui);
                             }
                             let (name, key) = label.split_once('\t').unwrap_or((label, ""));
-                            let r = menu_item_icon(ui, Some(g), name, key, true, matches!(a, Action::Delete | Action::DeletePermanent));
+                            let key = hotkeys::menu_key(&a, key);
+                            let r = menu_item_icon(ui, Some(g), name, &key, true, matches!(a, Action::Delete | Action::DeletePermanent));
                             if r.clicked() {
                                 out.actions.push(a);
                                 ui.close_menu();

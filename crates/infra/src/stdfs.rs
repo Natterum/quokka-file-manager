@@ -101,14 +101,11 @@ impl FileSystem for StdFs {
         #[cfg(windows)]
         {
             // a bitmask from the OS instead of probing C:–Z: one by one, which can
-            // hang for seconds on disconnected network drives
-            let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
-            (0..26u8)
-                .filter(|i| mask & (1 << i) != 0)
-                .map(|i| (b'A' + i) as char)
-                .filter(|&c| c >= 'C')
-                .map(|c| PathBuf::from(format!("{c}:\\")))
-                .collect()
+            // hang for seconds on disconnected network drives; then phones and
+            // cameras (MTP), which have no letter, as last found by the drive watch
+            let mut v = crate::drives::roots(crate::drives::mask());
+            v.extend(crate::mtp::roots());
+            v
         }
         #[cfg(not(windows))]
         {
@@ -230,6 +227,27 @@ mod tests {
         assert_eq!(&*p.all[2].type_name, "Текстовый документ");
         assert!(p.navigate(dir.join("missing")).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Folders the user may not read are counted as skipped; the rest is still summed.
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_folders_are_skipped_not_fatal() {
+        let root = std::env::temp_dir().join(format!("quokka-size-denied-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("locked/inner")).unwrap();
+        fs::write(root.join("locked/inner/f"), b"12345").unwrap();
+        fs::write(root.join("ok"), b"12").unwrap();
+        let locked = root.join("locked");
+        let icacls = |args: &[&str]| std::process::Command::new("icacls").arg(&locked).args(args).output().unwrap();
+        // Everyone: deny listing the folder
+        assert!(icacls(&["/deny", "*S-1-1-0:(RD)"]).status.success());
+        let result = StdFs.tree_size(&root, &AtomicBool::new(false));
+        icacls(&["/remove:d", "*S-1-1-0"]);
+        let result = result.unwrap();
+        assert_eq!(result.bytes, 2);
+        assert_eq!(result.skipped, 1);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

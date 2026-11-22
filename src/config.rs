@@ -103,6 +103,9 @@ pub struct Settings {
     pub update_checked_at: i64,
     /// Version the user chose to skip; not offered again by the automatic check.
     pub update_skip: String,
+    /// Keyboard shortcuts changed by the user: command id → "Ctrl+R, F5"
+    /// (empty — no keys). Commands not listed keep their defaults.
+    pub hotkeys: std::collections::BTreeMap<String, String>,
 }
 
 /// A saved server connection.
@@ -237,6 +240,7 @@ impl Default for Settings {
             check_updates: true,
             update_checked_at: 0,
             update_skip: String::new(),
+            hotkeys: Default::default(),
         }
     }
 }
@@ -319,6 +323,12 @@ impl Settings {
                 ["check_updates", v] => s.check_updates = flag(v),
                 ["update_checked_at", v] => s.update_checked_at = v.parse().unwrap_or(0),
                 ["update_skip", v] => s.update_skip = unesc(v),
+                ["hotkey", id, keys] => {
+                    s.hotkeys.insert(unesc(id), unesc(keys));
+                }
+                ["hotkey", id] => {
+                    s.hotkeys.insert(unesc(id), String::new());
+                }
                 ["language", v] => s.language = Lang::from_key(v).unwrap_or(s.language),
                 ["rename_mask", v] if s.rename_masks.len() < HISTORY_LEN => s.rename_masks.push(unesc(v)),
                 ["session_active", v] => s.session.active = usize::from(*v == "1"),
@@ -441,6 +451,9 @@ update_skip	{}
             out.push_str(&format!("session_cur_{key}	{}
 ", self.session.cur[pane]));
         }
+        for (id, keys) in &self.hotkeys {
+            out.push_str(&format!("hotkey\t{}\t{}\n", esc(id), esc(keys)));
+        }
         for c in &self.connections {
             out.push_str(&format!("connection\t{}\t{}\t{}\t{}\n", esc(&c.name), esc(&c.url), esc(&c.key_file), b(c.save_password)));
         }
@@ -476,6 +489,14 @@ update_skip	{}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotkeys_round_trip() {
+        let mut s = Settings::default();
+        s.hotkeys.insert("copy".into(), "F3, Ctrl+Shift+C".into());
+        s.hotkeys.insert("view".into(), String::new());
+        assert_eq!(Settings::from_text(&s.to_text()).hotkeys, s.hotkeys);
+    }
 
     #[test]
     fn connections_round_trip() {

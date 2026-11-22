@@ -13,6 +13,9 @@ pub enum Protocol {
     Ftp,
     /// FTP with explicit TLS (`AUTH TLS`).
     Ftps,
+    /// A phone, camera or player connected over MTP (Windows Portable Devices):
+    /// `mtp://Device name/Storage/folder`. Not a server: no login, no port.
+    Mtp,
 }
 
 impl Protocol {
@@ -23,6 +26,7 @@ impl Protocol {
             Protocol::Sftp => "sftp",
             Protocol::Ftp => "ftp",
             Protocol::Ftps => "ftps",
+            Protocol::Mtp => "mtp",
         }
     }
 
@@ -31,6 +35,7 @@ impl Protocol {
             Protocol::Sftp => "SFTP",
             Protocol::Ftp => "FTP",
             Protocol::Ftps => "FTPS",
+            Protocol::Mtp => "MTP",
         }
     }
 
@@ -38,11 +43,12 @@ impl Protocol {
         match self {
             Protocol::Sftp => 22,
             Protocol::Ftp | Protocol::Ftps => 21,
+            Protocol::Mtp => 0,
         }
     }
 
     pub fn from_scheme(s: &str) -> Option<Protocol> {
-        Protocol::ALL.into_iter().find(|p| p.scheme().eq_ignore_ascii_case(s))
+        Protocol::ALL.into_iter().chain([Protocol::Mtp]).find(|p| p.scheme().eq_ignore_ascii_case(s))
     }
 }
 
@@ -58,6 +64,9 @@ pub struct Site {
 impl Site {
     /// `user@host` or `user@host:port` (the port only when it is not the default).
     pub fn authority(&self) -> String {
+        if self.protocol == Protocol::Mtp {
+            return self.host.clone();
+        }
         let host = if self.host.contains(':') { format!("[{}]", self.host) } else { self.host.clone() };
         if self.port == self.protocol.default_port() {
             format!("{}@{host}", self.user)
@@ -79,6 +88,11 @@ impl Site {
 
     /// Parse `user@host[:port]` for `protocol`; `[::1]:2222` style hosts are accepted too.
     pub fn parse(protocol: Protocol, authority: &str) -> Option<Site> {
+        if protocol == Protocol::Mtp {
+            // the device name as Windows shows it
+            let name = authority.trim();
+            return (!name.is_empty()).then(|| Site { protocol, user: String::new(), host: name.to_string(), port: 0 });
+        }
         let (user, hostport) = authority.rsplit_once('@')?;
         let default = protocol.default_port();
         let (host, port) = if let Some(rest) = hostport.strip_prefix('[') {
@@ -120,6 +134,16 @@ fn text(path: &Path) -> Option<(Protocol, String)> {
 
 pub fn is_remote(path: &Path) -> bool {
     text(path).is_some()
+}
+
+/// Whether `path` is on a portable device (`mtp://…`).
+pub fn is_device(path: &Path) -> bool {
+    text(path).is_some_and(|(p, _)| p == Protocol::Mtp)
+}
+
+/// The device root (`mtp://Pixel 7`) of a device path.
+pub fn device_root(path: &Path) -> Option<PathBuf> {
+    split(path).filter(|(s, _)| s.protocol == Protocol::Mtp).map(|(s, _)| s.path("/"))
 }
 
 /// Site and absolute POSIX path (always starting with `/`, no trailing slash except
@@ -187,6 +211,19 @@ pub fn starts_with(child: &Path, ancestor: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_paths() {
+        let p = Path::new("mtp://Pixel 7/Внутренний общий накопитель/DCIM");
+        assert!(is_remote(p) && is_device(p));
+        let (site, rest) = split(p).unwrap();
+        assert_eq!((site.protocol, site.host.as_str(), rest.as_str()), (Protocol::Mtp, "Pixel 7", "/Внутренний общий накопитель/DCIM"));
+        assert_eq!(site.url(), "mtp://Pixel 7");
+        assert_eq!(parent(Path::new("mtp://Pixel 7/A")), Some(PathBuf::from("mtp://Pixel 7/")));
+        assert_eq!(device_root(p), Some(PathBuf::from("mtp://Pixel 7/")));
+        assert!(!is_device(Path::new("sftp://a@b/c")));
+        assert!(!Protocol::ALL.contains(&Protocol::Mtp), "not offered in the connect dialog");
+    }
 
     #[test]
     fn parses_sites() {

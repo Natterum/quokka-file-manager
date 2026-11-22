@@ -9,7 +9,7 @@
 //! Logins are kept in memory for the life of the process, so a dropped connection is
 //! re-established transparently on the next call.
 
-use crate::{ftp, sftp};
+use crate::{ftp, mtp, sftp};
 use quokka_core::ports::Size;
 use quokka_domain::entry::Meta;
 use quokka_domain::remote::{self, Protocol, Site};
@@ -59,6 +59,10 @@ pub fn connect(site: &Site, login: Login, trust: Option<String>) -> Result<PathB
     match site.protocol {
         Protocol::Sftp => sftp::connect(site, login, trust),
         Protocol::Ftp | Protocol::Ftps => ftp::connect(site, login),
+        Protocol::Mtp => {
+            let _ = login;
+            mtp::Remote::open(site.clone(), "/".into()).map(|r| site.path(&r.path)).map_err(|e| ConnectError::Failed(e.to_string()))
+        }
     }
 }
 
@@ -66,6 +70,7 @@ pub fn disconnect(site: &Site) {
     match site.protocol {
         Protocol::Sftp => sftp::disconnect(site),
         Protocol::Ftp | Protocol::Ftps => ftp::disconnect(site),
+        Protocol::Mtp => {}
     }
 }
 
@@ -73,6 +78,7 @@ pub fn is_connected(site: &Site) -> bool {
     match site.protocol {
         Protocol::Sftp => sftp::is_connected(site),
         Protocol::Ftp | Protocol::Ftps => ftp::is_connected(site),
+        Protocol::Mtp => mtp::is_connected(site),
     }
 }
 
@@ -121,6 +127,7 @@ pub trait RemoteWriter: Write + Send {
 pub enum Node {
     Sftp(sftp::Remote),
     Ftp(ftp::Remote),
+    Mtp(mtp::Remote),
 }
 
 pub fn resolve(path: &Path) -> io::Result<Node> {
@@ -128,6 +135,7 @@ pub fn resolve(path: &Path) -> io::Result<Node> {
     Ok(match site.protocol {
         Protocol::Sftp => Node::Sftp(sftp::Remote::open(site, p)?),
         Protocol::Ftp | Protocol::Ftps => Node::Ftp(ftp::Remote::open(site, p)?),
+        Protocol::Mtp => Node::Mtp(mtp::Remote::open(site, p)?),
     })
 }
 
@@ -136,6 +144,7 @@ macro_rules! each {
         match $self {
             Node::Sftp($r) => $e,
             Node::Ftp($r) => $e,
+            Node::Mtp($r) => $e,
         }
     };
 }
@@ -157,6 +166,7 @@ impl Node {
         match self {
             Node::Sftp(r) => Node::Sftp(r.child(name)),
             Node::Ftp(r) => Node::Ftp(r.child(name)),
+            Node::Mtp(r) => Node::Mtp(r.child(name)),
         }
     }
 
@@ -212,6 +222,7 @@ impl Node {
         match (self, to) {
             (Node::Sftp(a), Node::Sftp(b)) if a.site == b.site => a.rename(b),
             (Node::Ftp(a), Node::Ftp(b)) if a.site == b.site => a.rename(b),
+            (Node::Mtp(a), Node::Mtp(b)) if a.site == b.site => a.rename(b),
             _ => Err(io::Error::new(io::ErrorKind::Unsupported, tr!("Переименование между серверами невозможно", "Cannot rename across servers"))),
         }
     }
@@ -234,6 +245,7 @@ impl Node {
         match self {
             Node::Sftp(r) => r.space(),
             Node::Ftp(_) => None,
+            Node::Mtp(r) => r.space(),
         }
     }
 }
