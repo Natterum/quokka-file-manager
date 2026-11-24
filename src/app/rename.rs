@@ -123,7 +123,7 @@ impl RenameDialog {
 fn insert_token(ctx: &egui::Context, id: Id, text: &mut String, tok: &str) {
     let state = egui::TextEdit::load_state(ctx, id);
     let n = text.chars().count();
-    let pos = state.as_ref().and_then(|s| s.cursor.char_range()).map_or(n, |r| r.primary.index.min(n));
+    let pos = state.as_ref().and_then(|s| s.cursor.char_range()).map_or(n, |r| r.primary.index.0.min(n));
     let byte = text.char_indices().nth(pos).map_or(text.len(), |(b, _)| b);
     text.insert_str(byte, tok);
     let mut state = state.unwrap_or_default();
@@ -135,15 +135,15 @@ fn insert_token(ctx: &egui::Context, id: Id, text: &mut String, tok: &str) {
 
 fn chip(ui: &mut Ui, tok: &str, label: &str, tip: &str) -> Response {
     let g_tok = ui.painter().layout_no_wrap(tok.to_string(), mono(12.0), BLUE);
-    let g_lab = ui.painter().layout_no_wrap(label.to_string(), regular(12.5), TEXT_SOFT);
+    let g_lab = ui.painter().layout_no_wrap(label.to_string(), regular(12.5), TEXT_SOFT());
     let w = g_tok.size().x + g_lab.size().x + 22.0;
     let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
     let p = ui.painter();
-    p.rect(r, 13.0, if resp.hovered() { BLUE_SOFT } else { INPUT_BG }, Stroke::new(1.0, if resp.hovered() { BLUE } else { BORDER }));
+    p.rect(r, rad(13.0), if resp.hovered() { BLUE_SOFT() } else { INPUT_BG() }, Stroke::new(1.0, if resp.hovered() { BLUE } else { BORDER() }), eframe::egui::StrokeKind::Middle);
     let y = r.center().y;
     let x = r.left() + 9.0;
     p.galley(pos2(x, y - g_tok.size().y / 2.0), g_tok.clone(), BLUE);
-    p.galley(pos2(x + g_tok.size().x + 5.0, y - g_lab.size().y / 2.0), g_lab, TEXT_SOFT);
+    p.galley(pos2(x + g_tok.size().x + 5.0, y - g_lab.size().y / 2.0), g_lab, TEXT_SOFT());
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -152,7 +152,7 @@ fn small_field(ui: &mut Ui, text: &mut String, width: f32) -> Response {
 }
 
 fn label(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(13.0).color(TEXT_SOFT));
+    ui.label(RichText::new(text).size(13.0).color(TEXT_SOFT()));
 }
 
 impl QuokkaApp {
@@ -189,10 +189,10 @@ impl QuokkaApp {
         let mut cancel = false;
         let mut reset = false;
         let history = self.settings.rename_masks.clone();
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let width = (screen.width() - 80.0).clamp(560.0, 940.0);
         let list_h = (screen.height() - 470.0).clamp(140.0, 420.0);
-        let name_id = Id::new(NAME_ID);
+        let name_id = Id::unique(NAME_ID);
 
         dialog(ctx, "multi-rename", width, |ui| {
             let sub = format!("{} · {}", items_text(d.items.len() as u64), d.folder);
@@ -223,7 +223,7 @@ impl QuokkaApp {
                     ui.set_width(ext_w);
                     ui.spacing_mut().item_spacing.y = 4.0;
                     label(ui, tr!("Расширение", "Extension"));
-                    jb_field(ui, Id::new("mr-ext"), &mut d.rules.ext_mask, tr!("без расширения", "no extension"), Glyph::Document, mono(14.0), &[], |_| {});
+                    jb_field(ui, Id::unique("mr-ext"), &mut d.rules.ext_mask, tr!("без расширения", "no extension"), Glyph::Document, mono(14.0), &[], |_| {});
                 });
             });
 
@@ -248,7 +248,7 @@ impl QuokkaApp {
                     let (regex, case) = (d.rules.regex, d.rules.match_case);
                     let mut toggle = (false, false);
                     let hint = if regex { tr!("регулярное выражение", "regular expression") } else { tr!("текст; несколько — через |", "text; several — separated by |") };
-                    jb_field(ui, Id::new("mr-find"), &mut d.rules.find, hint, Glyph::Search, mono(13.5), &[], |ui| {
+                    jb_field(ui, Id::unique("mr-find"), &mut d.rules.find, hint, Glyph::Search, mono(13.5), &[], |ui| {
                         toggle.0 = field_toggle(ui, ".*", regex, tr!("Регулярное выражение; в замене $1, $2 — найденные группы", "Regular expression; in the replacement $1, $2 — captured groups")).clicked();
                         toggle.1 = field_toggle(ui, "Aa", case, tr!("Учитывать регистр букв", "Match letter case")).clicked();
                     });
@@ -264,7 +264,7 @@ impl QuokkaApp {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     label(ui, tr!("Заменить на", "Replace with"));
                     let hint = if d.rules.regex { tr!("$1 — первая группа", "$1 — first group") } else { tr!("замены через | в том же порядке", "replacements separated by | in the same order") };
-                    jb_field(ui, Id::new("mr-replace"), &mut d.rules.replace, hint, Glyph::ArrowRight, mono(13.5), &[], |_| {});
+                    jb_field(ui, Id::unique("mr-replace"), &mut d.rules.replace, hint, Glyph::ArrowRight, mono(13.5), &[], |_| {});
                 });
             });
 
@@ -291,20 +291,20 @@ impl QuokkaApp {
             ui.add_space(4.0);
             let (head, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
             let p = ui.painter();
-            p.rect_filled(head, Rounding { nw: 6.0, ne: 6.0, ..Default::default() }, HEADER_BG);
+            p.rect_filled(head, CornerRadius { nw: rad_u8(6), ne: rad_u8(6), ..Default::default() }, HEADER_BG());
             let col_old = head.left() + 36.0;
             let col_new = head.left() + 36.0 + (w - 36.0) * 0.42;
             let all_on = d.include.iter().all(|&v| v);
-            let toggle_all = ui.interact(Rect::from_center_size(pos2(head.left() + 16.0, head.center().y), vec2(20.0, 20.0)), Id::new("mr-all"), Sense::click());
+            let toggle_all = ui.interact(Rect::from_center_size(pos2(head.left() + 16.0, head.center().y), vec2(20.0, 20.0)), Id::unique("mr-all"), Sense::click());
             draw_check(ui.painter(), toggle_all.rect, all_on, d.include.iter().any(|&v| v));
             if toggle_all.on_hover_text(tr!("Отметить все / снять", "Mark all / unmark")).clicked() {
                 d.include.iter_mut().for_each(|v| *v = !all_on);
             }
             let p = ui.painter();
-            p.text(pos2(col_old, head.center().y), Align2::LEFT_CENTER, tr!("Было", "Before"), semibold(12.5), TEXT_SOFT);
-            p.text(pos2(col_new, head.center().y), Align2::LEFT_CENTER, tr!("Станет", "After"), semibold(12.5), TEXT_SOFT);
+            p.text(pos2(col_old, head.center().y), Align2::LEFT_CENTER, tr!("Было", "Before"), semibold(12.5), TEXT_SOFT());
+            p.text(pos2(col_new, head.center().y), Align2::LEFT_CENTER, tr!("Станет", "After"), semibold(12.5), TEXT_SOFT());
 
-            egui::Frame::none().stroke(Stroke::new(1.0, BORDER)).show(ui, |ui| {
+            egui::Frame::NONE.stroke(Stroke::new(1.0, BORDER())).show(ui, |ui| {
                 ui.set_width(w - 2.0);
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 match &d.plan {
@@ -324,22 +324,22 @@ impl QuokkaApp {
                                     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                                     let p = ui.painter();
                                     if resp.hovered() {
-                                        p.rect_filled(r, 0.0, HOVER);
+                                        p.rect_filled(r, 0.0, HOVER());
                                     }
-                                    p.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, ROW_LINE));
+                                    p.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, ROW_LINE()));
                                     let on = d.include[i];
                                     draw_check(p, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(20.0, 20.0)), on, on);
                                     let g = if src.is_dir { Glyph::Folder } else { Glyph::Document };
                                     let gr = Rect::from_center_size(pos2(col_old + 7.0, r.center().y), vec2(14.0, 14.0));
-                                    icons::glyph(p, gr, g, if src.is_dir { FOLDER_BACK } else { SLATE });
+                                    icons::glyph(p, gr, g, if src.is_dir { FOLDER_BACK } else { SLATE() });
                                     let old = src.name();
                                     let old_clip = p.with_clip_rect(Rect::from_min_max(pos2(col_old, r.top()), pos2(col_new - 30.0, r.bottom())));
-                                    old_clip.text(pos2(col_old + 22.0, r.center().y), Align2::LEFT_CENTER, &old, regular(13.5), if on { TEXT } else { MUTED });
+                                    old_clip.text(pos2(col_old + 22.0, r.center().y), Align2::LEFT_CENTER, &old, regular(13.5), if on { TEXT() } else { MUTED() });
                                     let (fg, font) = match (on, pl.changed, pl.problem) {
-                                        (false, _, _) => (MUTED, regular(13.5)),
+                                        (false, _, _) => (MUTED(), regular(13.5)),
                                         (_, true, Some(_)) => (RED, semibold(13.5)),
                                         (_, true, None) => (BLUE, semibold(13.5)),
-                                        _ => (MUTED, regular(13.5)),
+                                        _ => (MUTED(), regular(13.5)),
                                     };
                                     if pl.changed {
                                         icons::glyph(p, Rect::from_center_size(pos2(col_new - 15.0, r.center().y), vec2(12.0, 12.0)), Glyph::ArrowRight, fg);
@@ -376,8 +376,8 @@ impl QuokkaApp {
                 let (text, col) = match (&d.plan, changed, bad) {
                     (Err(_), _, _) => (tr!("Исправьте маску", "Fix the mask").to_string(), RED),
                     (_, _, b) if b > 0 => (trf!("Конфликтов: {b} — исправьте маску или снимите галочки", "Conflicts: {b} — fix the mask or uncheck items"), RED),
-                    (_, 0, _) => (tr!("Имена не меняются", "Names do not change").to_string(), MUTED),
-                    (_, c, _) => (trf!("Будет переименовано: {c} из {total}", "Will be renamed: {c} of {total}"), TEXT_SOFT),
+                    (_, 0, _) => (tr!("Имена не меняются", "Names do not change").to_string(), MUTED()),
+                    (_, c, _) => (trf!("Будет переименовано: {c} из {total}", "Will be renamed: {c} of {total}"), TEXT_SOFT()),
                 };
                 ui.label(RichText::new(text).size(13.0).color(col));
                 if ui.link(RichText::new(tr!("Сбросить", "Reset")).size(13.0).color(BLUE)).clicked() {
@@ -389,7 +389,7 @@ impl QuokkaApp {
                             apply = true;
                         }
                     });
-                    if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                    if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                         cancel = true;
                     }
                 });
@@ -442,12 +442,12 @@ impl QuokkaApp {
 fn draw_check(p: &egui::Painter, r: Rect, on: bool, partial: bool) {
     let b = Rect::from_center_size(r.center(), vec2(15.0, 15.0));
     if on {
-        p.rect_filled(b, 4.0, BLUE);
+        p.rect_filled(b, rad(4.0), BLUE);
         let c = b.center();
         p.line_segment([c + vec2(-3.8, 0.2), c + vec2(-1.0, 3.0)], Stroke::new(1.8, Color32::WHITE));
         p.line_segment([c + vec2(-1.0, 3.0), c + vec2(4.0, -2.8)], Stroke::new(1.8, Color32::WHITE));
     } else {
-        p.rect(b, 4.0, CARD, Stroke::new(1.2, FIELD_BORDER));
+        p.rect(b, rad(4.0), CARD(), Stroke::new(1.2, FIELD_BORDER()), eframe::egui::StrokeKind::Middle);
         if partial {
             p.hline((b.left() + 4.0)..=(b.right() - 4.0), b.center().y, Stroke::new(1.8, BLUE));
         }

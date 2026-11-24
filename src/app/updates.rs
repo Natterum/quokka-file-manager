@@ -169,13 +169,13 @@ impl QuokkaApp {
         let mut open_page: Option<String> = None;
         let busy = self.queue.is_active();
         let kind = update::install_kind();
-        let width = 560.0_f32.min(ctx.screen_rect().width() - 64.0);
+        let width = 560.0_f32.min(ctx.content_rect().width() - 64.0);
         dialog(ctx, "update", width, |ui| match &d.phase {
             Phase::Checking => {
                 dialog_header(ui, Glyph::Download, BLUE, tr!("Проверка обновлений", "Checking for updates"), Some(&trf!("Установлена версия {}", "Installed version {}", current())));
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(16.0).color(BLUE));
-                    ui.label(RichText::new(tr!("Связываюсь с GitHub…", "Contacting GitHub…")).color(TEXT_SOFT));
+                    ui.label(RichText::new(tr!("Связываюсь с GitHub…", "Contacting GitHub…")).color(TEXT_SOFT()));
                 });
                 ui.add_space(14.0);
                 buttons_row(ui, |ui| {
@@ -197,7 +197,7 @@ impl QuokkaApp {
             }
             Phase::Failed(e) => {
                 dialog_header(ui, Glyph::Close, RED, tr!("Не удалось обновить", "Update failed"), None);
-                ui.add(egui::Label::new(RichText::new(e.as_str()).color(TEXT)).wrap());
+                ui.add(egui::Label::new(RichText::new(e.as_str()).color(TEXT())).wrap());
                 ui.add_space(14.0);
                 buttons_row(ui, |ui| {
                     if jb_btn(ui, tr!("Закрыть", "Close"), true).clicked() {
@@ -218,16 +218,16 @@ impl QuokkaApp {
                 );
                 let notes = plain_notes(&r.notes);
                 if !notes.is_empty() {
-                    egui::Frame::none()
-                        .fill(INPUT_BG)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .rounding(10.0)
-                        .inner_margin(Margin { left: 14.0, right: 6.0, top: 10.0, bottom: 10.0 })
+                    egui::Frame::NONE
+                        .fill(INPUT_BG())
+                        .stroke(Stroke::new(1.0, BORDER()))
+                        .corner_radius(rad(10.0))
+                        .inner_margin(Margin { left: 14, right: 6, top: 10, bottom: 10 })
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             egui::ScrollArea::vertical().id_salt("update-notes").max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
                                 ui.set_width(ui.available_width() - 8.0);
-                                ui.add(egui::Label::new(RichText::new(notes).size(13.0).color(TEXT_SOFT)).wrap());
+                                ui.add(egui::Label::new(RichText::new(notes).size(13.0).color(TEXT_SOFT())).wrap());
                             });
                         });
                     ui.add_space(10.0);
@@ -243,7 +243,7 @@ impl QuokkaApp {
                         InstallKind::Portable => tr!("Новая версия заменит quokka.exe в папке программы; Quokka перезапустится. Вкладки сохранятся.", "The new version will replace quokka.exe in the program folder; Quokka will restart. Tabs are kept."),
                     }
                 };
-                ui.add(egui::Label::new(RichText::new(how).size(12.5).color(MUTED)).wrap());
+                ui.add(egui::Label::new(RichText::new(how).size(12.5).color(MUTED())).wrap());
                 ui.add_space(14.0);
                 buttons_row(ui, |ui| {
                     let install = ui.add_enabled_ui(installable && !busy, |ui| jb_btn(ui, tr!("Обновить и перезапустить", "Update and restart"), true)).inner;
@@ -274,7 +274,7 @@ impl QuokkaApp {
                 } else {
                     format_size(done)
                 };
-                ui.label(RichText::new(text).size(12.5).color(MUTED));
+                ui.label(RichText::new(text).size(12.5).color(MUTED()));
                 ui.add_space(14.0);
                 buttons_row(ui, |ui| {
                     if jb_btn(ui, tr!("Отмена", "Cancel"), false).clicked() {

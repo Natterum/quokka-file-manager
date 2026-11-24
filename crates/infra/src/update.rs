@@ -80,23 +80,26 @@ pub fn install_kind() -> InstallKind {
 }
 
 fn agent() -> Result<ureq::Agent, String> {
-    let tls = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
-    Ok(ureq::AgentBuilder::new()
-        .tls_connector(std::sync::Arc::new(tls))
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
+    use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+    // Native TLS with the Windows certificate store, as before the ureq 3 upgrade.
+    let tls = TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build();
+    let config = ureq::Agent::config_builder()
+        .tls_config(tls)
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_per_read(Some(Duration::from_secs(30)))
         .user_agent(concat!("quokka-file-manager/", env!("CARGO_PKG_VERSION")))
-        .build())
+        .build();
+    Ok(config.into())
 }
 
 fn http_error(e: ureq::Error) -> String {
     match e {
-        ureq::Error::Status(403, _) | ureq::Error::Status(429, _) => {
+        ureq::Error::StatusCode(403 | 429) => {
             tr!("GitHub временно ограничил запросы, попробуйте позже", "GitHub is rate-limiting requests, try again later").into()
         }
-        ureq::Error::Status(404, _) => tr!("Выпуски не найдены", "No releases found").into(),
-        ureq::Error::Status(code, _) => trf!("Ошибка сервера: HTTP {code}", "Server error: HTTP {code}"),
-        ureq::Error::Transport(t) => trf!("Нет связи с GitHub: {t}", "Cannot reach GitHub: {t}"),
+        ureq::Error::StatusCode(404) => tr!("Выпуски не найдены", "No releases found").into(),
+        ureq::Error::StatusCode(code) => trf!("Ошибка сервера: HTTP {code}", "Server error: HTTP {code}"),
+        t => trf!("Нет связи с GitHub: {t}", "Cannot reach GitHub: {t}"),
     }
 }
 
@@ -133,11 +136,12 @@ pub fn latest() -> Result<Release, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body = agent()?
         .get(&url)
-        .set("Accept", "application/vnd.github+json")
-        .set("X-GitHub-Api-Version", "2022-11-28")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
         .call()
         .map_err(http_error)?
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|e| e.to_string())?;
     parse_release(&body)
 }
@@ -169,8 +173,8 @@ pub fn verify(path: &Path, checksum_text: &str) -> Result<(), String> {
 
 fn fetch_to(agent: &ureq::Agent, asset: &Asset, dest: &Path, cancel: &AtomicBool, progress: &dyn Fn(u64, u64)) -> Result<(), String> {
     let resp = agent.get(&asset.url).call().map_err(http_error)?;
-    let total = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(asset.size);
-    let mut reader = resp.into_reader().take(MAX_DOWNLOAD);
+    let total = resp.headers().get("Content-Length").and_then(|v| v.to_str().ok()?.parse().ok()).unwrap_or(asset.size);
+    let mut reader = resp.into_body().into_reader().take(MAX_DOWNLOAD);
     let part = dest.with_extension("part");
     let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 1 << 16];
@@ -213,7 +217,7 @@ pub fn download(release: &Release, kind: InstallKind, cancel: &AtomicBool, progr
         .asset(&update::checksum_asset(&name))
         .ok_or_else(|| trf!("В выпуске нет контрольной суммы для {name}", "The release has no checksum for {name}"))?;
     let agent = agent()?;
-    let checksum = agent.get(&sum.url).call().map_err(http_error)?.into_string().map_err(|e| e.to_string())?;
+    let checksum = agent.get(&sum.url).call().map_err(http_error)?.into_body().read_to_string().map_err(|e| e.to_string())?;
     let dir = download_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let dest = dir.join(&asset.name);

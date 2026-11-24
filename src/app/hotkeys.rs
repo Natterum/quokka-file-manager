@@ -457,24 +457,23 @@ fn chip(ui: &mut egui::Ui, text: &str, active: bool, changed: bool) -> egui::Res
     use crate::theme::*;
     use egui::{vec2, Sense, Stroke};
     let font = super::semibold(12.5);
-    let col = if active { BLUE } else { TEXT };
+    let col = if active { BLUE } else { TEXT() };
     let g = ui.painter().layout_no_wrap(text.to_string(), font, col);
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 18.0, 26.0), Sense::click());
     let (fill, stroke) = if active {
-        (BLUE_SOFT, Stroke::new(1.5, BLUE))
+        (BLUE_SOFT(), Stroke::new(1.5, BLUE))
     } else if resp.hovered() {
-        (BLUE_SOFT, Stroke::new(1.0, BLUE))
+        (BLUE_SOFT(), Stroke::new(1.0, BLUE))
     } else if changed {
-        (Color32::from_rgb(255, 248, 230), Stroke::new(1.0, Color32::from_rgb(240, 200, 120)))
+        (WARN_BG(), Stroke::new(1.0, WARN_BORDER()))
     } else {
-        (INPUT_BG, Stroke::new(1.0, Color32::from_rgb(214, 220, 230)))
+        (INPUT_BG(), Stroke::new(1.0, FIELD_BORDER()))
     };
-    ui.painter().rect(r, 5.0, fill, stroke);
+    ui.painter().rect(r, rad(5.0), fill, stroke, eframe::egui::StrokeKind::Middle);
     ui.painter().galley(r.center() - g.size() / 2.0, g, col);
     resp
 }
 
-use eframe::egui::Color32;
 
 /// The «Keyboard shortcuts» settings page. Edits `overrides` (what is saved).
 pub fn page(ui: &mut egui::Ui, overrides: &mut BTreeMap<String, String>, st: &mut EditState, q: &str) {
@@ -491,7 +490,7 @@ pub fn page(ui: &mut egui::Ui, overrides: &mut BTreeMap<String, String>, st: &mu
     ui.horizontal(|ui| {
         let can_reset = !map.is_default();
         if st.confirm_reset {
-            ui.label(RichText::new(tr!("Вернуть все сочетания по умолчанию?", "Restore all default shortcuts?")).size(13.5).color(TEXT));
+            ui.label(RichText::new(tr!("Вернуть все сочетания по умолчанию?", "Restore all default shortcuts?")).size(13.5).color(TEXT()));
             if super::jb_btn(ui, tr!("Сбросить", "Reset"), true).clicked() {
                 map = Keymap::defaults();
                 *st = EditState::default();
@@ -524,8 +523,8 @@ pub fn page(ui: &mut egui::Ui, overrides: &mut BTreeMap<String, String>, st: &mu
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.set_min_height(28.0);
             let hit = !q.is_empty() && name.to_lowercase().contains(q);
-            let label = RichText::new(name).size(13.5).color(TEXT);
-            let label = if hit { label.background_color(super::SEARCH_HIT) } else { label };
+            let label = RichText::new(name).size(13.5).color(TEXT());
+            let label = if hit { label.background_color(super::SEARCH_HIT()) } else { label };
             ui.add(egui::Label::new(label).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let tool = vec2(26.0, 26.0);
@@ -573,13 +572,13 @@ pub fn page(ui: &mut egui::Ui, overrides: &mut BTreeMap<String, String>, st: &mu
                         if ui.button(tr!("Убрать это сочетание", "Remove this shortcut")).clicked() {
                             let c = *combo;
                             action = Some(Box::new(move |m, _| m.keys[i].retain(|k| *k != c)));
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                     r.on_hover_text(tr!("Щёлкните, чтобы назначить другое сочетание; правый щелчок — убрать", "Click to assign another shortcut; right-click to remove"));
                 }
                 if keys.is_empty() && !adding {
-                    ui.label(RichText::new(tr!("нет", "none")).size(12.5).color(MUTED));
+                    ui.label(RichText::new(tr!("нет", "none")).size(12.5).color(MUTED()));
                 }
             });
         });
@@ -593,11 +592,11 @@ pub fn page(ui: &mut egui::Ui, overrides: &mut BTreeMap<String, String>, st: &mu
         }
         if let Some((cmd_i, slot, combo, owner)) = st.conflict {
             if cmd_i == i {
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(255, 248, 230))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(240, 200, 120)))
-                    .rounding(6.0)
-                    .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                egui::Frame::NONE
+                    .fill(WARN_BG())
+                    .stroke(egui::Stroke::new(1.0, WARN_BORDER()))
+                    .corner_radius(rad(6.0))
+                    .inner_margin(egui::Margin::symmetric(12, 8))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         let owner_name = map.commands[owner].name;
@@ -605,7 +604,7 @@ pub fn page(ui: &mut egui::Ui, overrides: &mut BTreeMap<String, String>, st: &mu
                             "{} уже назначено команде «{}». Переназначить на «{}»? У «{}» это сочетание будет убрано.",
                             "{} is already assigned to “{}”. Reassign it to “{}”? It will be removed from “{}”.",
                             combo.label(), owner_name, name, owner_name
-                        )).size(13.0).color(TEXT)).wrap());
+                        )).size(13.0).color(TEXT())).wrap());
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             if super::jb_btn(ui, tr!("Переназначить", "Reassign"), true).clicked() {
@@ -626,7 +625,7 @@ pub fn page(ui: &mut egui::Ui, overrides: &mut BTreeMap<String, String>, st: &mu
         }
     }
     if group.is_none() {
-        ui.label(RichText::new(tr!("Ничего не найдено", "Nothing found")).size(13.0).color(MUTED));
+        ui.label(RichText::new(tr!("Ничего не найдено", "Nothing found")).size(13.0).color(MUTED()));
     }
     *overrides = map.overrides();
 }

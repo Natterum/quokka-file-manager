@@ -83,7 +83,7 @@ mod imp {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
-    use windows_sys::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
+    use windows_sys::Win32::Foundation::PROPERTYKEY;
     use windows_sys::Win32::UI::Shell::{ILFree, ILGetSize, SHCreateItemFromIDList, SHCreateItemFromParsingName, SHGetIDListFromObject};
 
     const IID_SHELL_ITEM2: GUID = GUID::from_u128(0x7e9fb0d3_919f_4307_ab2e_9b1860310c93);
@@ -182,9 +182,9 @@ mod imp {
     // objects allow.
     unsafe impl Send for Com {}
     impl Com {
-        unsafe fn vt<T>(&self) -> &T {
+        unsafe fn vt<T>(&self) -> &T { unsafe {
             &**(self.0 as *const *const T)
-        }
+        }}
     }
     impl Drop for Com {
         fn drop(&mut self) {
@@ -212,7 +212,7 @@ mod imp {
         s.encode_utf16().chain(Some(0)).collect()
     }
 
-    unsafe fn take_string(p: *mut u16) -> String {
+    unsafe fn take_string(p: *mut u16) -> String { unsafe {
         if p.is_null() {
             return String::new();
         }
@@ -223,7 +223,7 @@ mod imp {
         let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
         CoTaskMemFree(p as *const c_void);
         s
-    }
+    }}
 
     struct Item(Com);
 

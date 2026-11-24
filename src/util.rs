@@ -20,7 +20,7 @@ impl KindColor for FileKind {
             FileKind::Audio => ORANGE,
             FileKind::Archive => RED,
             FileKind::Code => GREEN,
-            FileKind::Executable => SLATE,
+            FileKind::Executable => SLATE(),
             FileKind::Other => GRAY,
         }
     }

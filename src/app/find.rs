@@ -298,8 +298,8 @@ fn load_preview(h: &Hit, needle: &str, case: bool) -> Preview {
 /// A preview line with every occurrence of `needle` marked like an IDE search hit.
 fn highlight_line(line: &str, needle: &str, case: bool, font: egui::FontId) -> LayoutJob {
     let mut job = LayoutJob::default();
-    let normal = TextFormat { font_id: font.clone(), color: TEXT, ..Default::default() };
-    let hit = TextFormat { font_id: font, color: TEXT, background: SEARCH_HIT, ..Default::default() };
+    let normal = TextFormat { font_id: font.clone(), color: TEXT(), ..Default::default() };
+    let hit = TextFormat { font_id: font, color: TEXT(), background: SEARCH_HIT(), ..Default::default() };
     let (hay, nd) = if case { (line.to_string(), needle.to_string()) } else { (line.to_lowercase(), needle.to_lowercase()) };
     let mut i = 0;
     if !nd.is_empty() && hay.len() == line.len() {
@@ -355,7 +355,7 @@ impl QuokkaApp {
         let running = fd.search.as_ref().is_some_and(|s| s.running);
         let n = fd.search.as_ref().map_or(0, |s| s.hits.len());
         fd.sel = fd.sel.min(n.saturating_sub(1));
-        let typing = ctx.wants_keyboard_input();
+        let typing = ctx.egui_wants_keyboard_input();
         let mut act = None;
 
         if x_close {
@@ -398,7 +398,7 @@ impl QuokkaApp {
             });
         }
 
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let width = (screen.width() - 80.0).min(1000.0);
         let total_h = (screen.height() - 60.0).min(880.0);
         let masks = self.settings.find_masks.clone();
@@ -417,11 +417,11 @@ impl QuokkaApp {
             const PAD: f32 = 24.0;
 
             // ── title bar: name, live status, filters and close
-            egui::Frame::none().inner_margin(Margin { left: PAD, right: 16.0, top: 16.0, bottom: 14.0 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(Margin { left: PAD as i8, right: 16, top: 16, bottom: 14 }).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    ui.label(RichText::new(tr!("Поиск файлов", "Find files")).font(semibold(14.5)).color(TEXT));
+                    ui.label(RichText::new(tr!("Поиск файлов", "Find files")).font(semibold(14.5)).color(TEXT()));
                     match &fd.search {
                         Some(s) => {
                             if s.running {
@@ -441,10 +441,10 @@ impl QuokkaApp {
                             if s.errors > 0 {
                                 status.push_str(&trf!(" · недоступно: {}", " · inaccessible: {}", s.errors));
                             }
-                            ui.label(RichText::new(status).size(12.5).color(MUTED));
+                            ui.label(RichText::new(status).size(12.5).color(MUTED()));
                         }
                         None => {
-                            ui.label(RichText::new(tr!("по имени, содержимому и свойствам · Alt+F7", "by name, content and properties · Alt+F7")).size(12.5).color(MUTED));
+                            ui.label(RichText::new(tr!("по имени, содержимому и свойствам · Alt+F7", "by name, content and properties · Alt+F7")).size(12.5).color(MUTED()));
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -462,13 +462,13 @@ impl QuokkaApp {
             });
 
             // ── query: name, text, scope, filters
-            egui::Frame::none().inner_margin(Margin { left: PAD, right: PAD, top: 0.0, bottom: 18.0 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(Margin { left: PAD as i8, right: PAD as i8, top: 0, bottom: 18 }).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
                 ui.add_enabled_ui(!running, |ui| {
                     let hint = if fd.mask_regex { tr!(r"Имя (regex): ^IMG_\d{4}\.jpe?g$", r"Name (regex): ^IMG_\d{4}\.jpe?g$") } else { tr!("Имя: *.txt;*.doc | temp*   — пусто: все файлы", "Name: *.txt;*.doc | temp*   — empty: all files") };
                     let font = if fd.mask_regex { mono(14.0) } else { regular(14.0) };
-                    let (mut out, _) = jb_field(ui, Id::new("find-mask"), &mut fd.mask, hint, Glyph::Search, font, &masks, |ui| {
+                    let (mut out, _) = jb_field(ui, Id::unique("find-mask"), &mut fd.mask, hint, Glyph::Search, font, &masks, |ui| {
                         if field_toggle(ui, ".*", fd.mask_regex, tr!("Регулярное выражение вместо масок", "Regular expression instead of masks")).clicked() {
                             fd.mask_regex = !fd.mask_regex;
                         }
@@ -491,10 +491,10 @@ impl QuokkaApp {
                     } else {
                         tr!("Маски через «;» или пробел; без * и ? ищется часть имени. После «|» — исключения: файлы (*.bak) и папки (node_modules\\).", "Masks separated by “;” or space; without * and ? part of the name is searched. After “|” — exclusions: files (*.bak) and folders (node_modules\\).")
                     };
-                    out.response.on_hover_text(tip);
+                    out.response.response.clone().on_hover_text(tip);
 
                     let font = if fd.text_regex { mono(14.0) } else { regular(14.0) };
-                    let (out, _) = jb_field(ui, Id::new("find-text"), &mut fd.text, tr!("Текст внутри файла — необязательно", "Text inside the file — optional"), Glyph::Document, font, &texts, |ui| {
+                    let (out, _) = jb_field(ui, Id::unique("find-text"), &mut fd.text, tr!("Текст внутри файла — необязательно", "Text inside the file — optional"), Glyph::Document, font, &texts, |ui| {
                         for (on, label, tip) in [
                             (&mut fd.text_enc, "1251", tr!("Искать ещё и в кодировках UTF-16 LE и Windows-1251 (не для регулярных выражений)", "Also search in UTF-16 LE and Windows-1251 encodings (not for regular expressions)")),
                             (&mut fd.text_not, "≠", tr!("Найти файлы, в которых этого текста НЕТ", "Find files that do NOT contain this text")),
@@ -516,7 +516,7 @@ impl QuokkaApp {
                     ui.horizontal_wrapped(|ui| {
                         let w = (ui.available_width() * 0.4).max(220.0);
                         ui.allocate_ui(vec2(w, 32.0), |ui| {
-                            let (o, _) = jb_field(ui, Id::new("find-roots"), &mut fd.roots, tr!("Папка; несколько — через «;»", "Folder; several — separated by “;”"), Glyph::Folder, regular(13.5), &[], |_| {});
+                            let (o, _) = jb_field(ui, Id::unique("find-roots"), &mut fd.roots, tr!("Папка; несколько — через «;»", "Folder; several — separated by “;”"), Glyph::Folder, regular(13.5), &[], |_| {});
                             if o.response.lost_focus() && enter {
                                 act = Some(Act::Start);
                             }
@@ -532,17 +532,17 @@ impl QuokkaApp {
                         if let Some(i) = segmented(ui, &[tr!("Всё", "All"), tr!("Файлы", "Files"), tr!("Папки", "Folders")], k) {
                             fd.kinds = KINDS[i];
                         }
-                        ui.checkbox(&mut fd.hidden, RichText::new(tr!("Скрытые", "Hidden")).color(TEXT)).on_hover_text(tr!("Искать среди скрытых и системных файлов", "Search among hidden and system files"));
-                        ui.checkbox(&mut fd.archives, RichText::new(tr!("В ZIP", "In ZIP")).color(TEXT))
+                        ui.checkbox(&mut fd.hidden, RichText::new(tr!("Скрытые", "Hidden")).color(TEXT())).on_hover_text(tr!("Искать среди скрытых и системных файлов", "Search among hidden and system files"));
+                        ui.checkbox(&mut fd.archives, RichText::new(tr!("В ZIP", "In ZIP")).color(TEXT()))
                             .on_hover_text(tr!("Искать среди имён файлов в ZIP-архивах (текст внутри архивов не ищется)", "Search among file names in ZIP archives (text inside archives is not searched)"));
                     });
 
                     if fd.filters_open {
-                        egui::Frame::none().fill(NAV_BG).stroke(Stroke::new(1.0, BORDER)).rounding(6.0).inner_margin(Margin::symmetric(14.0, 12.0)).show(ui, |ui| {
+                        egui::Frame::NONE.fill(NAV_BG()).stroke(Stroke::new(1.0, BORDER())).corner_radius(rad(6.0)).inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                             ui.horizontal(|ui| {
-                                ui.add_sized(vec2(120.0, 26.0), egui::Checkbox::new(&mut fd.size_on, RichText::new(tr!("Размер", "Size")).color(TEXT)));
+                                ui.add_sized(vec2(120.0, 26.0), egui::Checkbox::new(&mut fd.size_on, RichText::new(tr!("Размер", "Size")).color(TEXT())));
                                 ui.add_enabled_ui(fd.size_on, |ui| {
                                     let cur = size_cmps().iter().find(|(c, _)| *c == fd.size_cmp).map_or("", |(_, l)| l);
                                     egui::ComboBox::from_id_salt("find-size-cmp").selected_text(cur).width(96.0).show_ui(ui, |ui| {
@@ -561,11 +561,11 @@ impl QuokkaApp {
                                     fd.size_val = "100".into();
                                 }
                                 if fd.size_on {
-                                    ui.label(RichText::new(tr!("папки не показываются", "folders are not shown")).size(12.0).color(MUTED));
+                                    ui.label(RichText::new(tr!("папки не показываются", "folders are not shown")).size(12.0).color(MUTED()));
                                 }
                             });
                             ui.horizontal(|ui| {
-                                ui.add_sized(vec2(120.0, 26.0), egui::Label::new(RichText::new(tr!("Дата изменения", "Date modified")).color(TEXT)));
+                                ui.add_sized(vec2(120.0, 26.0), egui::Label::new(RichText::new(tr!("Дата изменения", "Date modified")).color(TEXT())));
                                 const MODES: [DateMode; 3] = [DateMode::Any, DateMode::Within, DateMode::Between];
                                 let k = MODES.iter().position(|m| *m == fd.date_mode).unwrap_or(0);
                                 if let Some(i) = segmented(ui, &[tr!("Любая", "Any"), tr!("Не старше", "Not older than"), tr!("Промежуток", "Range")], k) {
@@ -583,11 +583,11 @@ impl QuokkaApp {
                                         });
                                     }
                                     DateMode::Between => {
-                                        ui.label(RichText::new(tr!("с", "from")).color(TEXT));
+                                        ui.label(RichText::new(tr!("с", "from")).color(TEXT()));
                                         ui.add(egui::TextEdit::singleline(&mut fd.date_from).desired_width(100.0).margin(vec2(6.0, 4.0)).hint_text(tr!("ДД.ММ.ГГГГ", "DD.MM.YYYY")));
-                                        ui.label(RichText::new(tr!("по", "to")).color(TEXT));
+                                        ui.label(RichText::new(tr!("по", "to")).color(TEXT()));
                                         ui.add(egui::TextEdit::singleline(&mut fd.date_to).desired_width(100.0).margin(vec2(6.0, 4.0)).hint_text(tr!("ДД.ММ.ГГГГ", "DD.MM.YYYY")));
-                                        ui.label(RichText::new(tr!("любую дату можно опустить", "either date can be omitted")).size(12.0).color(MUTED));
+                                        ui.label(RichText::new(tr!("любую дату можно опустить", "either date can be omitted")).size(12.0).color(MUTED()));
                                     }
                                 }
                             });
@@ -605,7 +605,7 @@ impl QuokkaApp {
 
             // ── results: one dense line per hit, location on the right
             let (lr, _) = ui.allocate_exact_size(vec2(width, list_h), Sense::hover());
-            ui.painter().hline(lr.x_range(), lr.top(), Stroke::new(1.0, BORDER));
+            ui.painter().hline(lr.x_range(), lr.top(), Stroke::new(1.0, BORDER()));
             place(ui, egui::UiBuilder::new().max_rect(lr.shrink2(vec2(0.0, 1.0))), |ui| {
                 let hits: &[Hit] = fd.search.as_ref().map_or(&[], |s| s.hits.as_slice());
                 if hits.is_empty() {
@@ -614,7 +614,7 @@ impl QuokkaApp {
                         Some(s) if s.running => tr!("Ищем…", "Searching…"),
                         Some(_) => tr!("Ничего не найдено", "Nothing found"),
                     };
-                    ui.painter().text(lr.center(), Align2::CENTER_CENTER, msg, regular(13.5), MUTED);
+                    ui.painter().text(lr.center(), Align2::CENTER_CENTER, msg, regular(13.5), MUTED());
                     return;
                 }
                 let mut sa = egui::ScrollArea::vertical().id_salt("find-results").auto_shrink([false, false]);
@@ -638,9 +638,9 @@ impl QuokkaApp {
                         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                         let p = ui.painter();
                         if i == fd.sel {
-                            p.rect_filled(rect, 0.0, NAV_SEL);
+                            p.rect_filled(rect, 0.0, NAV_SEL());
                         } else if resp.hovered() {
-                            p.rect_filled(rect, 0.0, HOVER);
+                            p.rect_filled(rect, 0.0, HOVER());
                         }
                         let cy = rect.center().y;
                         let name = h.name();
@@ -657,18 +657,18 @@ impl QuokkaApp {
                         let small = regular(12.5);
                         let size_x = rect.right() - PAD;
                         if !h.is_dir {
-                            p.text(pos2(size_x, cy), Align2::RIGHT_CENTER, format_size(h.size), small.clone(), MUTED);
+                            p.text(pos2(size_x, cy), Align2::RIGHT_CENTER, format_size(h.size), small.clone(), MUTED());
                         }
                         let loc = elide_left(p, &h.location(), &small, rect.width() * 0.38);
-                        let loc_r = p.text(pos2(size_x - 78.0, cy), Align2::RIGHT_CENTER, loc, small, MUTED);
+                        let loc_r = p.text(pos2(size_x - 78.0, cy), Align2::RIGHT_CENTER, loc, small, MUTED());
                         let clip = Rect::from_min_max(pos2(ir.right() + 8.0, rect.top()), pos2(loc_r.left() - 14.0, rect.bottom()));
                         let pc = p.with_clip_rect(clip);
-                        let mut end = pc.text(pos2(clip.left(), cy), Align2::LEFT_CENTER, &name, regular(13.5), TEXT).right();
+                        let mut end = pc.text(pos2(clip.left(), cy), Align2::LEFT_CENTER, &name, regular(13.5), TEXT()).right();
                         if h.inner.is_some() {
                             end = pc.text(pos2(end + 8.0, cy), Align2::LEFT_CENTER, tr!("в архиве", "in archive"), regular(12.0), ORANGE).right();
                         }
                         if let Some(s) = &h.snippet {
-                            pc.text(pos2(end + 14.0, cy), Align2::LEFT_CENTER, s, mono(12.5), TEXT_SOFT);
+                            pc.text(pos2(end + 14.0, cy), Align2::LEFT_CENTER, s, mono(12.5), TEXT_SOFT());
                         }
 
                         let mut tip = h.path.display().to_string();
@@ -679,7 +679,7 @@ impl QuokkaApp {
                         if resp.clicked() || resp.secondary_clicked() {
                             clicked = Some(i);
                         }
-                        if row_double_clicked(&resp, Id::new(("find-row", &h.path, &h.inner))) {
+                        if row_double_clicked(&resp, Id::unique(("find-row", &h.path, &h.inner))) {
                             clicked = Some(i);
                             row_act = Some(Act::GoTo);
                         }
@@ -698,13 +698,13 @@ impl QuokkaApp {
                                 if menu_item_icon(ui, Some(g), label, key, en, false).clicked() {
                                     clicked = Some(i);
                                     row_act = Some(a);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         });
                     }
                 });
-                fd.list_off = out.state.offset.y;
+                fd.list_off = out.state.clamped_offset().y;
                 fd.list_h = out.inner_rect.height();
                 if let Some(i) = clicked {
                     if i != fd.sel {
@@ -719,27 +719,27 @@ impl QuokkaApp {
             // ── preview of the selected file, scrolled to the match
             let (pr, _) = ui.allocate_exact_size(vec2(width, prev_h), Sense::hover());
             let head = Rect::from_min_size(pr.min, vec2(width, 32.0));
-            ui.painter().rect_filled(head, 0.0, NAV_BG);
-            ui.painter().hline(pr.x_range(), pr.top(), Stroke::new(1.0, BORDER));
-            ui.painter().hline(pr.x_range(), head.bottom(), Stroke::new(1.0, BORDER));
+            ui.painter().rect_filled(head, 0.0, NAV_BG());
+            ui.painter().hline(pr.x_range(), pr.top(), Stroke::new(1.0, BORDER()));
+            ui.painter().hline(pr.x_range(), head.bottom(), Stroke::new(1.0, BORDER()));
             if let Some(h) = fd.hit() {
                 let p = ui.painter();
                 let small = regular(12.5);
                 let info = if h.is_dir { format_time(h.modified) } else { format!("{} · {}", format_size(h.size), format_time(h.modified)) };
-                let ir = p.text(pos2(head.right() - PAD, head.center().y), Align2::RIGHT_CENTER, info, small.clone(), MUTED);
+                let ir = p.text(pos2(head.right() - PAD, head.center().y), Align2::RIGHT_CENTER, info, small.clone(), MUTED());
                 let mut path = h.path.display().to_string();
                 if let Some(inner) = &h.inner {
                     path.push_str(&format!(" › {}", inner.replace('/', "\\")));
                 }
                 let path = elide_left(p, &path, &small, ir.left() - head.left() - PAD - 40.0);
-                p.text(pos2(head.left() + PAD, head.center().y), Align2::LEFT_CENTER, path, small, TEXT_SOFT);
+                p.text(pos2(head.left() + PAD, head.center().y), Align2::LEFT_CENTER, path, small, TEXT_SOFT());
             }
             let body = Rect::from_min_max(pos2(pr.left(), head.bottom() + 1.0), pr.max);
             place(ui, egui::UiBuilder::new().max_rect(body), |ui| {
                 let pv = &mut fd.preview;
                 if pv.lines.is_empty() {
                     let msg = pv.note.unwrap_or(if fd.preview_key.is_some() { "" } else { tr!("Выберите результат, чтобы увидеть содержимое", "Select a result to see its contents") });
-                    ui.painter().text(body.center(), Align2::CENTER_CENTER, msg, regular(13.0), MUTED);
+                    ui.painter().text(body.center(), Align2::CENTER_CENTER, msg, regular(13.0), MUTED());
                     return;
                 }
                 const LINE: f32 = 20.0;
@@ -751,30 +751,30 @@ impl QuokkaApp {
                         sa = sa.vertical_scroll_offset((f as f32 * LINE - body.height() / 3.0).max(0.0));
                     }
                 }
-                ui.painter().rect_filled(Rect::from_min_size(body.min, vec2(GUTTER, body.height())), Rounding::ZERO, NAV_BG);
+                ui.painter().rect_filled(Rect::from_min_size(body.min, vec2(GUTTER, body.height())), CornerRadius::ZERO, NAV_BG());
                 sa.show_rows(ui, LINE, pv.lines.len(), |ui, range| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for i in range {
                         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), LINE), Sense::hover());
                         let p = ui.painter();
                         if pv.focus == Some(i) {
-                            p.rect_filled(Rect::from_min_max(pos2(r.left() + GUTTER, r.top()), r.max), 0.0, Color32::from_rgb(237, 243, 255));
+                            p.rect_filled(Rect::from_min_max(pos2(r.left() + GUTTER, r.top()), r.max), 0.0, BLUE_SOFT());
                         }
-                        p.text(pos2(r.left() + GUTTER - 10.0, r.center().y), Align2::RIGHT_CENTER, (i + 1).to_string(), mono(12.0), MUTED);
+                        p.text(pos2(r.left() + GUTTER - 10.0, r.center().y), Align2::RIGHT_CENTER, (i + 1).to_string(), mono(12.0), MUTED());
                         let job = highlight_line(&pv.lines[i], &needle, fd.text_case, mono(13.0));
-                        let g = ui.fonts(|f| f.layout_job(job));
+                        let g = ui.fonts_mut(|f| f.layout_job(job));
                         let pc = p.with_clip_rect(Rect::from_min_max(pos2(r.left() + GUTTER + 4.0, r.top()), r.max));
-                        pc.galley(pos2(r.left() + GUTTER + 10.0, r.center().y - g.size().y / 2.0), g, TEXT);
+                        pc.galley(pos2(r.left() + GUTTER + 10.0, r.center().y - g.size().y / 2.0), g, TEXT());
                     }
                 });
             });
 
             // ── footer
             let (bar, _) = ui.allocate_exact_size(vec2(width, 60.0), Sense::hover());
-            ui.painter().rect_filled(bar, Rounding { sw: FLAT_R, se: FLAT_R, ..Default::default() }, NAV_BG);
-            ui.painter().hline(bar.x_range(), bar.top(), Stroke::new(1.0, BORDER));
+            ui.painter().rect_filled(bar, CornerRadius { sw: rad_u8(FLAT_R as u8), se: rad_u8(FLAT_R as u8), ..Default::default() }, NAV_BG());
+            ui.painter().hline(bar.x_range(), bar.top(), Stroke::new(1.0, BORDER()));
             place(ui, egui::UiBuilder::new().max_rect(bar.shrink2(vec2(PAD, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
-                ui.label(RichText::new(tr!("Enter — перейти · F3 — просмотр · F4 — редактор · Esc — закрыть", "Enter — go to · F3 — view · F4 — editor · Esc — close")).size(12.0).color(MUTED));
+                ui.label(RichText::new(tr!("Enter — перейти · F3 — просмотр · F4 — редактор · Esc — закрыть", "Enter — go to · F3 — view · F4 — editor · Esc — close")).size(12.0).color(MUTED()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     if running {

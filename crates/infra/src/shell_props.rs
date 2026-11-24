@@ -77,7 +77,8 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+        use windows_sys::core::BOOL;
+        use windows_sys::Win32::Foundation::{HWND, LPARAM};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             DispatchMessageW, EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, PeekMessageW,
             PostMessageW, TranslateMessage, MSG, PM_REMOVE, WM_CLOSE,
@@ -99,7 +100,7 @@ mod imp {
             }
         }
 
-        unsafe extern "system" fn collect(hwnd: HWND, out: LPARAM) -> BOOL {
+        unsafe extern "system" fn collect(hwnd: HWND, out: LPARAM) -> BOOL { unsafe {
             let out = &mut *(out as *mut Vec<(HWND, String)>);
             let mut pid = 0;
             GetWindowThreadProcessId(hwnd, &mut pid);
@@ -109,7 +110,7 @@ mod imp {
                 out.push((hwnd, String::from_utf16_lossy(&buf[..n.max(0) as usize])));
             }
             1
-        }
+        }}
 
         fn own_windows() -> Vec<(HWND, String)> {
             let mut out: Vec<(HWND, String)> = Vec::new();

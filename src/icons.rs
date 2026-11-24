@@ -2,7 +2,7 @@
 
 use crate::theme::*;
 use crate::util::{mix, FileKind, KindColor};
-use eframe::egui::{pos2, vec2, Align2, Color32, Painter, Rect, Rounding, Shape, Stroke};
+use eframe::egui::{pos2, vec2, Align2, Color32, Painter, Rect, CornerRadius, Shape, Stroke};
 use std::f32::consts::PI;
 
 /// Flat yellow folder.
@@ -12,11 +12,11 @@ pub fn folder(p: &Painter, r: Rect) {
     let r = Rect::from_center_size(r.center(), vec2(w, h));
     let rad = (w * 0.1).max(1.5);
     let tab = Rect::from_min_max(pos2(r.left(), r.top()), pos2(r.left() + w * 0.44, r.top() + h * 0.3));
-    p.rect_filled(tab, Rounding::same(rad), FOLDER_BACK);
+    p.rect_filled(tab, CornerRadius::from(rad), FOLDER_BACK);
     let back = Rect::from_min_max(pos2(r.left(), r.top() + h * 0.12), r.right_bottom());
-    p.rect_filled(back, Rounding::same(rad), FOLDER_BACK);
+    p.rect_filled(back, CornerRadius::from(rad), FOLDER_BACK);
     let front = Rect::from_min_max(pos2(r.left(), r.top() + h * 0.3), r.right_bottom());
-    p.rect_filled(front, Rounding::same(rad), FOLDER_FRONT);
+    p.rect_filled(front, CornerRadius::from(rad), FOLDER_FRONT);
     p.line_segment(
         [pos2(front.left() + rad, front.top() + 0.8), pos2(front.right() - rad, front.top() + 0.8)],
         Stroke::new((h * 0.06).max(1.0), FOLDER_LIGHT),
@@ -28,7 +28,7 @@ pub fn file(p: &Painter, r: Rect, kind: FileKind, ext: &str) {
     let c = kind.color();
     let side = r.height().min(r.width());
     let t = Rect::from_center_size(r.center(), vec2(side, side));
-    p.rect_filled(t, Rounding::same(side * 0.24), c);
+    p.rect_filled(t, CornerRadius::from(side * 0.24), c);
     let inner = t.shrink(side * 0.2);
     let white = Color32::WHITE;
     let s = Stroke::new((side * 0.075).max(1.2), white);
@@ -49,7 +49,7 @@ pub fn file(p: &Painter, r: Rect, kind: FileKind, ext: &str) {
                 let x = if i % 2 == 0 { 0.38 } else { 0.5 };
                 p.rect_filled(Rect::from_min_size(at(x, y), vec2(inner.width() * 0.14, inner.height() * 0.12)), 1.0, white);
             }
-            p.rect_stroke(Rect::from_min_max(at(0.36, 0.78), at(0.64, 1.0)), 1.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.36, 0.78), at(0.64, 1.0)), 1.0, s, eframe::egui::StrokeKind::Middle);
         }
         (FileKind::Image, _) => glyph(p, inner.expand(side * 0.05), Glyph::Image, white),
         (FileKind::Video, _) => {
@@ -69,7 +69,7 @@ pub fn file(p: &Painter, r: Rect, kind: FileKind, ext: &str) {
 pub fn parent(p: &Painter, r: Rect) {
     let side = r.height().min(r.width());
     let t = Rect::from_center_size(r.center(), vec2(side, side));
-    p.rect_filled(t, Rounding::same(side * 0.24), BLUE_SOFT);
+    p.rect_filled(t, CornerRadius::from(side * 0.24), BLUE_SOFT());
     glyph(p, t.shrink(side * 0.16), Glyph::ArrowUp, BLUE);
 }
 
@@ -77,8 +77,8 @@ pub fn parent(p: &Painter, r: Rect) {
 pub fn drive(p: &Painter, r: Rect) {
     let side = r.height().min(r.width());
     let t = Rect::from_center_size(r.center(), vec2(side, side));
-    p.rect_filled(t, Rounding::same(side * 0.24), mix(SLATE, Color32::WHITE, 0.85));
-    glyph(p, t.shrink(side * 0.14), Glyph::Drive, SLATE);
+    p.rect_filled(t, CornerRadius::from(side * 0.24), mix(SLATE(), CARD(), 0.85));
+    glyph(p, t.shrink(side * 0.14), Glyph::Drive, SLATE());
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -187,7 +187,7 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.add(Shape::line(vec![at(0.43, 0.82), at(0.43, 0.6), at(0.57, 0.6), at(0.57, 0.82)], s));
         }
         Glyph::Desktop => {
-            p.rect_stroke(Rect::from_min_max(at(0.12, 0.2), at(0.88, 0.66)), 2.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.12, 0.2), at(0.88, 0.66)), 2.0, s, eframe::egui::StrokeKind::Middle);
             p.line_segment([at(0.5, 0.66), at(0.5, 0.82)], s);
             p.line_segment([at(0.32, 0.82), at(0.68, 0.82)], s);
         }
@@ -206,7 +206,7 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.2, 0.84), at(0.8, 0.84)], s);
         }
         Glyph::Image => {
-            p.rect_stroke(Rect::from_min_max(at(0.12, 0.18), at(0.88, 0.82)), 2.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.12, 0.18), at(0.88, 0.82)), 2.0, s, eframe::egui::StrokeKind::Middle);
             p.add(Shape::line(
                 vec![at(0.18, 0.76), at(0.4, 0.52), at(0.56, 0.66), at(0.67, 0.56), at(0.84, 0.72)],
                 s,
@@ -221,11 +221,11 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.circle_filled(at(0.68, 0.67), w * 0.1, c);
         }
         Glyph::Video => {
-            p.rect_stroke(Rect::from_min_max(at(0.1, 0.28), at(0.64, 0.72)), 2.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.1, 0.28), at(0.64, 0.72)), 2.0, s, eframe::egui::StrokeKind::Middle);
             p.add(Shape::closed_line(vec![at(0.64, 0.44), at(0.9, 0.3), at(0.9, 0.7), at(0.64, 0.56)], s));
         }
         Glyph::Drive => {
-            p.rect_stroke(Rect::from_min_max(at(0.12, 0.22), at(0.88, 0.78)), 3.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.12, 0.22), at(0.88, 0.78)), 3.0, s, eframe::egui::StrokeKind::Middle);
             p.line_segment([at(0.12, 0.56), at(0.88, 0.56)], s);
             p.circle_filled(at(0.72, 0.67), w * 0.05, c);
         }
@@ -262,7 +262,7 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.22, 0.5), at(0.78, 0.5)], s);
         }
         Glyph::Copy => {
-            p.rect_stroke(Rect::from_min_max(at(0.34, 0.34), at(0.84, 0.84)), 2.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.34, 0.34), at(0.84, 0.84)), 2.0, s, eframe::egui::StrokeKind::Middle);
             p.add(Shape::line(
                 vec![at(0.66, 0.34), at(0.66, 0.16), at(0.16, 0.16), at(0.16, 0.66), at(0.34, 0.66)],
                 s,
@@ -300,7 +300,7 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.add(Shape::line(vec![at(0.62, 0.14), at(0.72, 0.28), at(0.56, 0.36)], s));
         }
         Glyph::Columns => {
-            p.rect_stroke(Rect::from_min_max(at(0.14, 0.2), at(0.86, 0.8)), 2.5, s);
+            p.rect_stroke(Rect::from_min_max(at(0.14, 0.2), at(0.86, 0.8)), 2.5, s, eframe::egui::StrokeKind::Middle);
             p.line_segment([at(0.5, 0.2), at(0.5, 0.8)], s);
         }
         Glyph::Gear => {
@@ -386,7 +386,7 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.56, 0.2), at(0.44, 0.8)], s);
         }
         Glyph::Briefcase => {
-            p.rect_stroke(Rect::from_min_max(at(0.1, 0.3), at(0.9, 0.84)), 2.5, s);
+            p.rect_stroke(Rect::from_min_max(at(0.1, 0.3), at(0.9, 0.84)), 2.5, s, eframe::egui::StrokeKind::Middle);
             p.add(Shape::line(vec![at(0.36, 0.3), at(0.36, 0.16), at(0.64, 0.16), at(0.64, 0.3)], s));
             p.line_segment([at(0.1, 0.54), at(0.9, 0.54)], s);
         }
@@ -395,12 +395,12 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.5, 0.26), at(0.5, 0.88)], s);
         }
         Glyph::Archive => {
-            p.rect_stroke(Rect::from_min_max(at(0.1, 0.16), at(0.9, 0.36)), 2.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.1, 0.16), at(0.9, 0.36)), 2.0, s, eframe::egui::StrokeKind::Middle);
             p.add(Shape::line(vec![at(0.16, 0.36), at(0.16, 0.86), at(0.84, 0.86), at(0.84, 0.36)], s));
             p.line_segment([at(0.4, 0.52), at(0.6, 0.52)], s);
         }
         Glyph::Game => {
-            p.rect_stroke(Rect::from_min_max(at(0.08, 0.28), at(0.92, 0.74)), w * 0.2, s);
+            p.rect_stroke(Rect::from_min_max(at(0.08, 0.28), at(0.92, 0.74)), w * 0.2, s, eframe::egui::StrokeKind::Middle);
             p.line_segment([at(0.3, 0.42), at(0.3, 0.6)], s);
             p.line_segment([at(0.21, 0.51), at(0.39, 0.51)], s);
             p.circle_filled(at(0.66, 0.46), w * 0.045, c);
@@ -413,8 +413,8 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.63, 0.64), at(0.3, 0.14)], s);
         }
         Glyph::Clipboard => {
-            p.rect_stroke(Rect::from_min_max(at(0.2, 0.2), at(0.8, 0.88)), 2.0, s);
-            p.rect_stroke(Rect::from_min_max(at(0.36, 0.1), at(0.64, 0.28)), 1.5, s);
+            p.rect_stroke(Rect::from_min_max(at(0.2, 0.2), at(0.8, 0.88)), 2.0, s, eframe::egui::StrokeKind::Middle);
+            p.rect_stroke(Rect::from_min_max(at(0.36, 0.1), at(0.64, 0.28)), 1.5, s, eframe::egui::StrokeKind::Middle);
             p.line_segment([at(0.34, 0.5), at(0.66, 0.5)], s);
             p.line_segment([at(0.34, 0.66), at(0.58, 0.66)], s);
         }
@@ -450,28 +450,28 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
             p.line_segment([at(0.5, 0.44), at(0.5, 0.7)], s);
         }
         Glyph::Terminal => {
-            p.rect_stroke(Rect::from_min_max(at(0.1, 0.18), at(0.9, 0.82)), 2.5, s);
+            p.rect_stroke(Rect::from_min_max(at(0.1, 0.18), at(0.9, 0.82)), 2.5, s, eframe::egui::StrokeKind::Middle);
             p.add(Shape::line(vec![at(0.26, 0.38), at(0.42, 0.52), at(0.26, 0.66)], s));
             p.line_segment([at(0.5, 0.66), at(0.72, 0.66)], s);
         }
         Glyph::Windows => {
             for (x, y) in [(0.16, 0.16), (0.53, 0.16), (0.16, 0.53), (0.53, 0.53)] {
-                p.rect_stroke(Rect::from_min_size(at(x, y), vec2(w * 0.31, r.height() * 0.31)), 1.5, s);
+                p.rect_stroke(Rect::from_min_size(at(x, y), vec2(w * 0.31, r.height() * 0.31)), 1.5, s, eframe::egui::StrokeKind::Middle);
             }
         }
         Glyph::Usb => {
             // plug body and the connector with its two contacts
-            p.rect_stroke(Rect::from_min_max(at(0.3, 0.38), at(0.7, 0.9)), 2.5, s);
-            p.rect_stroke(Rect::from_min_max(at(0.38, 0.1), at(0.62, 0.38)), 1.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.3, 0.38), at(0.7, 0.9)), 2.5, s, eframe::egui::StrokeKind::Middle);
+            p.rect_stroke(Rect::from_min_max(at(0.38, 0.1), at(0.62, 0.38)), 1.0, s, eframe::egui::StrokeKind::Middle);
             p.line_segment([at(0.45, 0.2), at(0.45, 0.27)], s);
             p.line_segment([at(0.55, 0.2), at(0.55, 0.27)], s);
         }
         Glyph::Phone => {
-            p.rect_stroke(Rect::from_min_max(at(0.28, 0.08), at(0.72, 0.92)), 3.0, s);
+            p.rect_stroke(Rect::from_min_max(at(0.28, 0.08), at(0.72, 0.92)), 3.0, s, eframe::egui::StrokeKind::Middle);
             p.line_segment([at(0.44, 0.8), at(0.56, 0.8)], s);
         }
         Glyph::Keyboard => {
-            p.rect_stroke(Rect::from_min_max(at(0.08, 0.24), at(0.92, 0.76)), 2.5, s);
+            p.rect_stroke(Rect::from_min_max(at(0.08, 0.24), at(0.92, 0.76)), 2.5, s, eframe::egui::StrokeKind::Middle);
             for y in [0.4, 0.53] {
                 for x in [0.24, 0.38, 0.52, 0.66, 0.8] {
                     p.circle_filled(at(x - 0.02, y), w * 0.035, c);
@@ -484,10 +484,10 @@ pub fn glyph(p: &Painter, r: Rect, g: Glyph, c: Color32) {
 
 /// Thin rounded progress bar.
 pub fn bar(p: &Painter, r: Rect, frac: f32, color: Color32) {
-    p.rect_filled(r, Rounding::same(r.height() / 2.0), TRACK);
+    p.rect_filled(r, CornerRadius::from(rad(r.height() / 2.0)), TRACK());
     let f = frac.clamp(0.0, 1.0);
     if f > 0.0 {
         let w = (r.width() * f).max(r.height());
-        p.rect_filled(Rect::from_min_size(r.min, vec2(w, r.height())), Rounding::same(r.height() / 2.0), color);
+        p.rect_filled(Rect::from_min_size(r.min, vec2(w, r.height())), CornerRadius::from(rad(r.height() / 2.0)), color);
     }
 }

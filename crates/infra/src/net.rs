@@ -140,7 +140,7 @@ pub fn resolve(path: &Path) -> io::Result<Node> {
 }
 
 macro_rules! each {
-    ($self:expr, $r:ident => $e:expr) => {
+    ($self:expr_2021, $r:ident => $e:expr_2021) => {
         match $self {
             Node::Sftp($r) => $e,
             Node::Ftp($r) => $e,

@@ -97,39 +97,6 @@ Benchmark with a folder containing 50,000 files (ignored by default):
 cargo test -p quokka-infra --release --test big_folder -- --ignored --nocapture
 ```
 
-### GitHub Actions: Windows x86 and x64
-
-The `.github/workflows/windows.yml` workflow runs on branch pushes, pull requests, and manually through **Actions → Windows CI and release → Run workflow**. For each architecture, it first runs `cargo test --workspace --locked --target …`, then builds in release mode. Failed tests block the build; failure of either architecture job blocks release publication.
-
-Before building, the job installs WiX Toolset 5 (`dotnet tool install --global wix`) with its UI extension. Run artifacts include, for each architecture, the portable `quokka-v<version>-windows-<arch>.zip` (`quokka.exe`, the README, and the changelog), the installer `quokka-v<version>-windows-<arch>.msi` (sources in `installer/`), and a `.sha256` checksum file for each. Artifacts are retained for 14 days. The built-in updater downloads these exact file names, so keep them unchanged.
-
-To publish a release:
-
-1. Update `version` in the root `Cargo.toml`, synchronize `Cargo.lock` with `cargo metadata --no-deps --format-version 1`, and update `CHANGELOG.md`.
-2. Commit the changes along with the workflow and push them to GitHub.
-3. Create and push a tag matching the package version (for the current version, `v0.2.0`):
-
-   ```powershell
-   git tag v0.2.0
-   git push origin v0.2.0
-   ```
-
-After both architecture builds succeed, the workflow creates a draft GitHub Release, uploads both archives, both installers, and their checksums, and publishes it with automatically generated release notes. Users of earlier versions are then offered the update within a day. Tags with a suffix, such as `v0.2.0-rc.1`, are published as prereleases and must also match the version in `Cargo.toml`. Manual runs build artifacts without publishing a release. If an upload is interrupted, rerunning continues with the draft; a published release is not overwritten and requires a new version tag.
-
-For a stable tag (no suffix), the `winget` job then writes winget manifests for the MSI packages (`.github/scripts/winget-manifests.ps1`) and uploads them as the `winget-manifests` artifact. If the repository has a `WINGET_TOKEN` secret (a classic personal access token with the `public_repo` scope), it also opens a pull request to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) with `wingetcreate submit`; without the secret, submit the artifact's manifests yourself. The first submission is reviewed by winget moderators; later versions go through the same pull request flow.
-
-The release itself uses the built-in `GITHUB_TOKEN`; only the optional winget submission needs a secret. GitHub Actions must be enabled in the repository, and organization policy must allow the workflow `contents: write` permission to publish releases. The `origin` Git remote must point to your GitHub repository.
-
-You can perform the same build and packaging locally from the project root (requires Rust, Visual Studio Build Tools with C++/Windows SDK, and for the MSI the .NET SDK with WiX: `dotnet tool install --global wix --version 5.0.2` and `wix extension add --global WixToolset.UI.wixext/5.0.2`; pass `-SkipMsi` to build only the ZIP):
-
-```powershell
-rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
-./.github/scripts/build-windows.ps1 -Target i686-pc-windows-msvc
-./.github/scripts/build-windows.ps1 -Target x86_64-pc-windows-msvc
-```
-
-Finished files are placed in `release/windows-x86/` and `release/windows-x64/`; ZIP archives, MSI installers, and SHA-256 checksums are placed in `release/`.
-
 ### Dependencies
 
 | Crate | Used in | Purpose |

@@ -2,6 +2,7 @@
 
 use quokka_domain::tr;
 use crate::icons::Glyph;
+use crate::theme::{Appearance, ThemeMode};
 use quokka_domain::lang::Lang;
 use std::fs;
 use std::path::PathBuf;
@@ -106,6 +107,8 @@ pub struct Settings {
     /// Keyboard shortcuts changed by the user: command id → "Ctrl+R, F5"
     /// (empty — no keys). Commands not listed keep their defaults.
     pub hotkeys: std::collections::BTreeMap<String, String>,
+    /// Font, corner rounding and colour theme.
+    pub appearance: Appearance,
 }
 
 /// A saved server connection.
@@ -241,6 +244,7 @@ impl Default for Settings {
             update_checked_at: 0,
             update_skip: String::new(),
             hotkeys: Default::default(),
+            appearance: Appearance::default(),
         }
     }
 }
@@ -330,6 +334,9 @@ impl Settings {
                     s.hotkeys.insert(unesc(id), String::new());
                 }
                 ["language", v] => s.language = Lang::from_key(v).unwrap_or(s.language),
+                ["font", v] if !v.is_empty() => s.appearance.font = unesc(v),
+                ["rounding", v] => s.appearance.rounding = v.parse::<u8>().map_or(100, |r| r.min(100)),
+                ["theme", v] => s.appearance.theme = ThemeMode::from_key(v).unwrap_or_default(),
                 ["rename_mask", v] if s.rename_masks.len() < HISTORY_LEN => s.rename_masks.push(unesc(v)),
                 ["session_active", v] => s.session.active = usize::from(*v == "1"),
                 [key @ ("session_tab_left" | "session_tab_right"), v] => {
@@ -436,6 +443,12 @@ update_skip	{}
             b(self.check_updates),
             self.update_checked_at,
             esc(&self.update_skip)
+        ));
+        out.push_str(&format!(
+            "font\t{}\nrounding\t{}\ntheme\t{}\n",
+            esc(&self.appearance.font),
+            self.appearance.rounding.min(100),
+            self.appearance.theme.key()
         ));
         for m in &self.rename_masks {
             out.push_str(&format!("rename_mask	{}
@@ -604,6 +617,16 @@ mod tests {
         assert_eq!(r.session, s.session);
         assert_eq!(r.rename_masks, s.rename_masks);
         assert!(r.close_to_tray && r.multi_instance && !r.tray_icon);
+    }
+
+    #[test]
+    fn appearance_default_and_round_trip() {
+        assert_eq!(Settings::from_text("").appearance, Appearance::default());
+        let mut s = Settings::default();
+        s.appearance = Appearance { font: "segoe".into(), rounding: 35, theme: ThemeMode::Dark };
+        assert_eq!(Settings::from_text(&s.to_text()).appearance, s.appearance);
+        let bad = Settings::from_text("rounding\t250\ntheme\tneon\n").appearance;
+        assert_eq!((bad.rounding, bad.theme), (100, ThemeMode::Light));
     }
 
     #[test]
