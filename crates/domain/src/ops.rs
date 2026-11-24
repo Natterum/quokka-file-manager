@@ -119,11 +119,37 @@ impl OpSpec {
         out.dedup();
         out
     }
+
+    /// Every path this operation reads or writes (sources, destinations, archives).
+    pub fn paths(&self) -> Vec<&Path> {
+        let mut out: Vec<&Path> = Vec::new();
+        match self {
+            OpSpec::Copy { sources, dest, .. } | OpSpec::Move { sources, dest, .. } | OpSpec::Zip { sources, dest } => {
+                out.extend(sources.iter().map(PathBuf::as_path));
+                out.push(dest);
+            }
+            OpSpec::Delete { sources } | OpSpec::Recycle { sources } => out.extend(sources.iter().map(PathBuf::as_path)),
+            OpSpec::Restore { originals } => out.extend(originals.iter().map(PathBuf::as_path)),
+            OpSpec::MoveBack { pairs } => out.extend(pairs.iter().flat_map(|(a, b)| [a.as_path(), b.as_path()])),
+            OpSpec::Unzip { archive, dest, .. } => out.extend([archive.as_path(), dest.as_path()]),
+            OpSpec::ConvertImages { sources, dest, .. } => {
+                out.extend(sources.iter().map(PathBuf::as_path));
+                out.extend(dest.as_deref());
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_cover_sources_and_destination() {
+        let spec = OpSpec::Copy { sources: vec![PathBuf::from("sftp://u@h/a.txt")], dest: PathBuf::from("C:/x"), overwrite: false };
+        assert_eq!(spec.paths(), vec![Path::new("sftp://u@h/a.txt"), Path::new("C:/x")]);
+    }
 
     #[test]
     fn touched_dirs_cover_sources_and_destination() {

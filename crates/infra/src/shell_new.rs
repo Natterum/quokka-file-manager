@@ -61,9 +61,9 @@ mod imp {
 
     struct ComPtr(*mut c_void);
     impl ComPtr {
-        unsafe fn vtable<T>(&self) -> &T {
+        unsafe fn vtable<T>(&self) -> &T { unsafe {
             &**(self.0 as *const *const T)
-        }
+        }}
     }
     impl Drop for ComPtr {
         fn drop(&mut self) {
@@ -105,7 +105,7 @@ mod imp {
         }
     }
 
-    unsafe fn new_menu(path: &Path) -> Result<(ComPtr, Menu), String> {
+    unsafe fn new_menu(path: &Path) -> Result<(ComPtr, Menu), String> { unsafe {
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut pidl = ptr::null_mut();
         check(SHParseDisplayName(
@@ -144,7 +144,7 @@ mod imp {
             obj.0, menu.0, 0, FIRST_ID, 0x7fff, CMF_NORMAL,
         ))?;
         Ok((obj, menu))
-    }
+    }}
 
     unsafe extern "system" fn menu_proc(
         hwnd: HWND,
@@ -153,7 +153,7 @@ mod imp {
         lp: LPARAM,
         _: usize,
         data: usize,
-    ) -> LRESULT {
+    ) -> LRESULT { unsafe {
         if matches!(
             msg,
             WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR
@@ -165,7 +165,7 @@ mod imp {
             }
         }
         DefSubclassProc(hwnd, msg, wp, lp)
-    }
+    }}
 
     struct Subclass(HWND);
     impl Drop for Subclass {
@@ -176,7 +176,7 @@ mod imp {
         }
     }
 
-    unsafe fn invoke(obj: &ComPtr, hwnd: HWND, path: &Path, command: u32) -> Result<(), String> {
+    unsafe fn invoke(obj: &ComPtr, hwnd: HWND, path: &Path, command: u32) -> Result<(), String> { unsafe {
         let mut info: CMINVOKECOMMANDINFOEX = std::mem::zeroed();
         let directory: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         info.cbSize = std::mem::size_of_val(&info) as u32;
@@ -190,14 +190,14 @@ mod imp {
             obj.0,
             &info as *const _ as *const CMINVOKECOMMANDINFO,
         ))
-    }
+    }}
 
     unsafe fn invoke_created(
         obj: &ComPtr,
         hwnd: HWND,
         path: &Path,
         command: u32,
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<PathBuf>, String> { unsafe {
         let entries = || -> Result<HashSet<PathBuf>, String> {
             std::fs::read_dir(path)
                 .map_err(|e| e.to_string())?
@@ -215,7 +215,7 @@ mod imp {
         } else {
             None
         })
-    }
+    }}
 
     /// Show Explorer's New submenu and return the created item for naming.
     /// Cancellation, or a handler with no single new item, returns None.

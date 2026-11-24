@@ -198,7 +198,7 @@ mod imp {
         }
     }
 
-    unsafe extern "system" fn subclass_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    unsafe extern "system" fn subclass_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT { unsafe {
         match msg {
             WM_TRAY => {
                 match lp as u32 {
@@ -237,7 +237,7 @@ mod imp {
             _ => {}
         }
         DefSubclassProc(h, msg, wp, lp)
-    }
+    }}
 
     /// Single-instance mode (`multi == false`): if Quokka already runs, give it `folder`,
     /// bring it to the front and return `true` (this launch should quit).

@@ -137,7 +137,7 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
 
 /// Convert an HICON into RGBA pixels and destroy it.
 #[cfg(windows)]
-unsafe fn hicon_to_rgba(hicon: windows_sys::Win32::UI::WindowsAndMessaging::HICON, size: u32) -> Option<Rgba> {
+unsafe fn hicon_to_rgba(hicon: windows_sys::Win32::UI::WindowsAndMessaging::HICON, size: u32) -> Option<Rgba> { unsafe {
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
     if hicon.is_null() {
@@ -198,7 +198,7 @@ unsafe fn hicon_to_rgba(hicon: windows_sys::Win32::UI::WindowsAndMessaging::HICO
     }
     let img = image::RgbaImage::from_raw(w as u32, h as u32, px)?;
     Some(square(img, size))
-}
+}}
 
 /// Icon #`index` from an exe/dll/ico file at roughly `size` pixels.
 #[cfg(windows)]

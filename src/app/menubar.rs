@@ -26,7 +26,7 @@ impl BarOut {
         let key = super::hotkeys::menu_key(&a, key);
         if menu_item_icon(ui, g, text, &key, enabled, danger).clicked() {
             self.actions.push(a);
-            ui.close_menu();
+            ui.close();
         }
     }
 
@@ -38,14 +38,15 @@ impl BarOut {
 
 /// One top-level entry of the bar with its drop-down.
 fn top_menu(ui: &mut Ui, title: &str, width: f32, add: impl FnOnce(&mut Ui)) {
-    ui.menu_button(RichText::new(title).font(regular(13.5)).color(TEXT), |ui| {
+    ui.menu_button(RichText::new(title).font(regular(13.5)).color(TEXT()), |ui| {
         menu_style(ui, width);
         menu_scroll(ui, add);
     });
 }
 
 impl QuokkaApp {
-    pub(super) fn menu_bar(&mut self, ctx: &egui::Context) {
+    pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         let (has_cur, has_targets, marked, is_pc, can_back, can_fwd, can_up, tabs, sort, asc, sizing) = {
             let p = self.ap_ref();
             let cur = p.current().is_some_and(|e| !e.is_parent);
@@ -75,30 +76,33 @@ impl QuokkaApp {
         // background shows through the half-covered row as a grey line under the menu.
         let ppp = ctx.pixels_per_point();
         let bar_h = (BAR_H * ppp).round() / ppp;
-        egui::TopBottomPanel::top("menubar")
-            .exact_height(bar_h)
+        egui::Panel::top("menubar")
+            .exact_size(bar_h)
             .show_separator_line(false)
-            .frame(egui::Frame::none().fill(CARD).inner_margin(Margin::symmetric(10.0, 0.0)))
-            .show(ctx, |ui| {
+            .frame(egui::Frame::NONE.fill(CARD()).inner_margin(Margin::symmetric(10, 0)))
+            .show(ui, |ui| {
                 // one physical pixel in the usual border colour along the bottom edge
                 let r = ui.max_rect().expand2(vec2(10.0, 0.0));
                 let px = 1.0 / ppp;
-                ui.painter().hline(r.x_range(), r.bottom() - px / 2.0, Stroke::new(px, BORDER));
+                ui.painter().hline(r.x_range(), r.bottom() - px / 2.0, Stroke::new(px, BORDER()));
                 ui.horizontal_centered(|ui| {
                     let s = ui.style_mut();
                     s.spacing.item_spacing.x = 2.0;
                     s.spacing.button_padding = vec2(10.0, 4.0);
                     let w = &mut s.visuals.widgets;
                     for wv in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-                        wv.rounding = Rounding::same(6.0);
+                        wv.corner_radius = CornerRadius::same(rad_u8(6));
                         wv.bg_stroke = Stroke::NONE;
                         wv.expansion = 0.0;
                     }
                     w.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                    w.hovered.weak_bg_fill = HOVER;
-                    w.active.weak_bg_fill = BLUE_SOFT;
-                    w.open.weak_bg_fill = BLUE_SOFT;
+                    w.hovered.weak_bg_fill = HOVER();
+                    w.active.weak_bg_fill = BLUE_SOFT();
+                    w.open.weak_bg_fill = BLUE_SOFT();
 
+                    // egui switches between open menus on hover only inside a MenuBar;
+                    // the empty style modifier keeps the bar look set up above.
+                    egui::MenuBar::new().style(egui::style::StyleModifier::default()).ui(ui, |ui| {
                     top_menu(ui, tr!("Файл", "File"), 300.0, |ui| {
                         out.item(ui, Some(Glyph::Folder), tr!("Открыть", "Open"), "Enter", has_cur, Action::Open);
                         out.item(ui, Some(Glyph::Eye), tr!("Просмотр", "View"), "F3", has_cur, Action::View);
@@ -148,11 +152,11 @@ impl QuokkaApp {
                         out.item(ui, Some(Glyph::Search), tr!("Поиск по имени…", "Search by name…"), "Ctrl+F", true, Action::FocusSearch);
                         if menu_item_icon(ui, case.then_some(Glyph::Check), tr!("Учитывать регистр", "Match case"), "", true, false).clicked() {
                             out.toggle_case = true;
-                            ui.close_menu();
+                            ui.close();
                         }
                         if menu_item_icon(ui, regex.then_some(Glyph::Check), tr!("Регулярные выражения", "Regular expressions"), "Alt+R", true, false).clicked() {
                             out.toggle_regex = true;
-                            ui.close_menu();
+                            ui.close();
                         }
                         out.item(ui, Some(Glyph::Search), tr!("Найти файлы…", "Find files…"), "Alt+F7", true, Action::FindFiles);
                     });
@@ -163,7 +167,7 @@ impl QuokkaApp {
                         out.check(ui, tr!("Скрытые файлы", "Hidden files"), "F11", hidden, Action::ToggleHidden);
                         out.check(ui, tr!("Очередь операций", "Operation queue"), "Ctrl+J", queue_open, Action::ToggleQueue);
                         menu_sep(ui);
-                        ui.menu_button(RichText::new(tr!("Сортировка", "Sort")).color(TEXT), |ui| {
+                        ui.menu_button(RichText::new(tr!("Сортировка", "Sort")).color(TEXT()), |ui| {
                             menu_style(ui, 210.0);
                             for (label, key) in [
                                 (tr!("По имени", "By name"), SortKey::Name),
@@ -179,7 +183,7 @@ impl QuokkaApp {
                                 let arrow = if on { if asc { "  ↑" } else { "  ↓" } } else { "" };
                                 if menu_item_icon(ui, on.then_some(Glyph::Check), &format!("{label}{arrow}"), "", true, false).clicked() {
                                     out.sort = Some(key);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         });
@@ -226,6 +230,7 @@ impl QuokkaApp {
                         out.item(ui, Some(Glyph::Download), tr!("Проверить обновления…", "Check for updates…"), "", true, Action::CheckUpdates);
                         out.item(ui, None, tr!("О программе Quokka", "About Quokka"), "", true, Action::About);
                     });
+                    });
                 });
             });
 
@@ -249,15 +254,12 @@ impl QuokkaApp {
     pub(super) fn about_ui(&mut self, ctx: &egui::Context, esc: bool) -> bool {
         let mut close = esc;
         let logo = self.logo.as_ref().map(|t| t.id());
-        // only versions that are out: unreleased work is not shown to users
-        let releases: Vec<&Release> = releases().iter().filter(|r| r.date.is_some()).collect();
-        let sel_id = Id::new("about-release");
-        let mut sel: usize = ctx.data(|d| d.get_temp(sel_id)).unwrap_or(0).min(releases.len().saturating_sub(1));
-        let log_h = (ctx.screen_rect().height() - 580.0).clamp(140.0, 320.0);
+        let current = current_release();
+        let log_h = (ctx.content_rect().height() - 580.0).clamp(140.0, 320.0);
         flat_dialog(ctx, "about", ABOUT_W, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             hero(ui, logo);
-            egui::Frame::none().inner_margin(Margin { left: PAD, right: PAD, top: 20.0, bottom: 0.0 }).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(Margin { left: PAD as i8, right: PAD as i8, top: 20, bottom: 0 }).show(ui, |ui| {
                 ui.add(
                     egui::Label::new(
                         RichText::new(
@@ -269,29 +271,22 @@ impl QuokkaApp {
                             ),
                         )
                         .size(14.0)
-                        .color(TEXT_SOFT),
+                        .color(TEXT_SOFT()),
                     )
                     .wrap(),
                 );
                 ui.add_space(22.0);
 
-                if releases.len() > 1 {
-                    let labels: Vec<&str> = releases.iter().map(|r| r.version.as_str()).collect();
-                    if let Some(i) = segmented(ui, &labels, sel) {
-                        sel = i;
-                    }
-                    ui.add_space(10.0);
-                }
-                if let Some(rel) = releases.get(sel) {
-                    egui::Frame::none()
-                        .fill(INPUT_BG)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .rounding(12.0)
-                        .inner_margin(Margin { left: 16.0, right: 8.0, top: 12.0, bottom: 12.0 })
+                if let Some(rel) = current {
+                    egui::Frame::NONE
+                        .fill(INPUT_BG())
+                        .stroke(Stroke::new(1.0, BORDER()))
+                        .corner_radius(rad(12.0))
+                        .inner_margin(Margin { left: 16, right: 8, top: 12, bottom: 12 })
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             egui::ScrollArea::vertical()
-                                .id_salt(("about-changes", sel))
+                                .id_salt("about-changes")
                                 .max_height(log_h)
                                 .auto_shrink([false, true])
                                 .show(ui, |ui| {
@@ -303,10 +298,10 @@ impl QuokkaApp {
             });
             ui.add_space(18.0);
             let (line, _) = ui.allocate_exact_size(vec2(ABOUT_W, 1.0), Sense::hover());
-            ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, BORDER));
-            egui::Frame::none().inner_margin(Margin::symmetric(PAD, 12.0)).show(ui, |ui| {
+            ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, BORDER()));
+            egui::Frame::NONE.inner_margin(Margin::symmetric(PAD as i8, 12)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Rust · egui · Windows").size(12.5).color(MUTED));
+                    ui.label(RichText::new("Rust · egui · Windows").size(12.5).color(MUTED()));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if btn(ui, tr!("Закрыть", "Close"), BLUE, Color32::WHITE).clicked() {
                             close = true;
@@ -315,7 +310,6 @@ impl QuokkaApp {
                 });
             });
         });
-        ctx.data_mut(|d| d.insert_temp(sel_id, sel));
         !close
     }
 }
@@ -328,42 +322,42 @@ const HERO_H: f32 = 196.0;
 fn hero(ui: &mut Ui, logo: Option<egui::TextureId>) {
     let (r, _) = ui.allocate_exact_size(vec2(ABOUT_W, HERO_H), Sense::hover());
     let p = ui.painter().with_clip_rect(r);
-    p.rect_filled(r, Rounding { nw: FLAT_R, ne: FLAT_R, ..Default::default() }, BLUE_SOFT);
-    let soft = |c: Color32, k: f32| mix(c, BLUE_SOFT, k);
+    p.rect_filled(r, CornerRadius { nw: rad_u8(FLAT_R as u8), ne: rad_u8(FLAT_R as u8), ..Default::default() }, BLUE_SOFT());
+    let soft = |c: Color32, k: f32| mix(c, BLUE_SOFT(), k);
     p.circle_filled(pos2(r.left() + 40.0, r.top() + 10.0), 90.0, soft(BLUE, 0.88));
     p.circle_filled(pos2(r.right() - 30.0, r.bottom() - 6.0), 110.0, soft(PURPLE, 0.9));
     p.circle_filled(pos2(r.right() - 150.0, r.top() + 26.0), 26.0, soft(TEAL, 0.86));
     p.circle_filled(pos2(r.left() + 150.0, r.bottom() - 24.0), 14.0, soft(ORANGE, 0.8));
-    p.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, BORDER));
+    p.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, BORDER()));
 
     let c = pos2(r.center().x, r.top() + 64.0);
     p.circle_filled(c + vec2(0.0, 3.0), 46.0, Color32::from_rgba_unmultiplied(22, 60, 140, 22));
-    p.circle(c, 46.0, CARD, Stroke::new(1.0, BORDER));
+    p.circle(c, 46.0, CARD(), Stroke::new(1.0, BORDER()));
     if let Some(id) = logo {
         let img = Rect::from_center_size(c, vec2(66.0, 66.0));
         p.image(id, img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-    p.text(pos2(r.center().x, r.top() + 134.0), Align2::CENTER_CENTER, "Quokka", semibold(26.0), TEXT);
+    p.text(pos2(r.center().x, r.top() + 134.0), Align2::CENTER_CENTER, "Quokka", semibold(26.0), TEXT());
 
     let ver = trf!("Версия {}", "Version {}", env!("CARGO_PKG_VERSION"));
     let tag = tr!("Двухпанельный файловый менеджер", "Dual-pane file manager");
     let vg = p.layout_no_wrap(ver, semibold(12.5), BLUE);
-    let tg = p.layout_no_wrap(tag.into(), regular(13.0), TEXT_SOFT);
+    let tg = p.layout_no_wrap(tag.into(), regular(13.0), TEXT_SOFT());
     let pill_w = vg.size().x + 20.0;
     let total = pill_w + 10.0 + tg.size().x;
     let y = r.top() + 168.0;
     let pill = Rect::from_min_size(pos2(r.center().x - total / 2.0, y - 11.0), vec2(pill_w, 22.0));
-    p.rect(pill, 11.0, CARD, Stroke::new(1.0, mix(BLUE, Color32::WHITE, 0.6)));
+    p.rect(pill, rad(11.0), CARD(), Stroke::new(1.0, mix(BLUE, CARD(), 0.6)), eframe::egui::StrokeKind::Middle);
     p.galley(pill.center() - vg.size() / 2.0, vg, BLUE);
-    p.galley(pos2(pill.right() + 10.0, y - tg.size().y / 2.0), tg, TEXT_SOFT);
+    p.galley(pos2(pill.right() + 10.0, y - tg.size().y / 2.0), tg, TEXT_SOFT());
 }
 
 fn release_ui(ui: &mut Ui, rel: &Release) {
     let note = match &rel.date {
-        Some(date) => trf!("Версия {} · выпуск от {date}", "Version {} · released {date}", rel.version),
-        None => trf!("Версия {}", "Version {}", rel.version),
+        Some(date) => format!("Version {} · released {date}", rel.version),
+        None => format!("Version {}", rel.version),
     };
-    ui.label(RichText::new(note).size(12.5).color(MUTED));
+    ui.label(RichText::new(note).size(12.5).color(MUTED()));
     ui.add_space(10.0);
     for (si, (name, items)) in rel.sections.iter().enumerate() {
         if si > 0 {
@@ -373,7 +367,7 @@ fn release_ui(ui: &mut Ui, rel: &Release) {
         let g = ui.painter().layout_no_wrap(name.clone(), semibold(12.0), col);
         let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 18.0, 22.0), Sense::hover());
         let fg = mix(col, Color32::BLACK, 0.15);
-        ui.painter().rect_filled(r, 11.0, mix(col, Color32::WHITE, 0.86));
+        ui.painter().rect_filled(r, rad(11.0), mix(col, CARD(), 0.86));
         ui.painter().galley(r.center() - g.size() / 2.0, g, fg);
         ui.add_space(8.0);
         for item in items {
@@ -384,13 +378,13 @@ fn release_ui(ui: &mut Ui, rel: &Release) {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     match split_title(item) {
                         Some((title, rest)) => {
-                            ui.add(egui::Label::new(RichText::new(title).font(semibold(13.5)).color(TEXT)).wrap());
+                            ui.add(egui::Label::new(RichText::new(title).font(semibold(13.5)).color(TEXT())).wrap());
                             if !rest.is_empty() {
-                                ui.add(egui::Label::new(RichText::new(rest).size(12.5).color(TEXT_SOFT)).wrap());
+                                ui.add(egui::Label::new(RichText::new(rest).size(12.5).color(TEXT_SOFT())).wrap());
                             }
                         }
                         None => {
-                            ui.add(egui::Label::new(RichText::new(item.as_str()).size(13.0).color(TEXT)).wrap());
+                            ui.add(egui::Label::new(RichText::new(item.as_str()).size(13.0).color(TEXT())).wrap());
                         }
                     }
                 });
@@ -402,11 +396,11 @@ fn release_ui(ui: &mut Ui, rel: &Release) {
 
 fn section_color(name: &str) -> Color32 {
     match name {
-        "Добавлено" => GREEN,
-        "Изменено" => BLUE,
-        "Исправлено" => ORANGE,
-        "Удалено" => RED,
-        _ => SLATE,
+        "Added" => GREEN,
+        "Changed" => BLUE,
+        "Fixed" => ORANGE,
+        "Removed" => RED,
+        _ => SLATE(),
     }
 }
 
@@ -440,7 +434,7 @@ fn releases() -> &'static [Release] {
                     Some((v, d)) => (v.trim().to_string(), Some(format_date(d.trim()))),
                     None => (h.trim().to_string(), None),
                 };
-                let version = if v.eq_ignore_ascii_case("unreleased") { tr!("В разработке", "In development").to_string() } else { v };
+                let version = if v.eq_ignore_ascii_case("unreleased") { "In development".to_string() } else { v };
                 out.push(Release { version, date, sections: Vec::new() });
             } else if let Some(rel) = out.last_mut() {
                 if let Some(name) = line.strip_prefix("### ") {
@@ -458,12 +452,16 @@ fn releases() -> &'static [Release] {
     })
 }
 
-/// `2026-11-20` → `20.11.2026`; anything else is shown as written.
+/// The changes of the running version; if it is missing from the changelog, the latest release.
+/// Unreleased work is not shown to users.
+fn current_release() -> Option<&'static Release> {
+    let released = || releases().iter().filter(|r| r.date.is_some());
+    released().find(|r| r.version == env!("CARGO_PKG_VERSION")).or_else(|| released().next())
+}
+
+/// Dates stay in ISO form (`2026-11-20`), as in the changelog.
 fn format_date(d: &str) -> String {
-    match d.split('-').collect::<Vec<_>>().as_slice() {
-        [y, m, day] => format!("{day}.{m}.{y}"),
-        _ => d.to_string(),
-    }
+    d.to_string()
 }
 
 /// Drops Markdown emphasis and code marks, which the dialog shows as plain text.
@@ -484,9 +482,14 @@ mod tests {
     }
 
     #[test]
+    fn about_shows_the_running_version() {
+        assert_eq!(current_release().unwrap().version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
     fn headline_is_split_off() {
-        assert_eq!(split_title("Поиск файлов (Alt+F7): маски").unwrap(), ("Поиск файлов".into(), "(Alt+F7): маски".into()));
-        assert_eq!(split_title("Очередь операций: прогресс").unwrap(), ("Очередь операций".into(), "прогресс".into()));
-        assert!(split_title("без разделителей").is_none());
+        assert_eq!(split_title("File search (Alt+F7): masks").unwrap(), ("File search".into(), "(Alt+F7): masks".into()));
+        assert_eq!(split_title("Operation queue: progress").unwrap(), ("Operation queue".into(), "progress".into()));
+        assert!(split_title("no separators").is_none());
     }
 }

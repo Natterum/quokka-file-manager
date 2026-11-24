@@ -108,11 +108,11 @@ impl ConvertDialog {
                     s.push_str(&format!(" ({}{:.0}%)", if pct >= 0.0 { "+" } else { "−" }, pct.abs()));
                 }
                 let stale = *k != key;
-                let color = if stale { MUTED } else if e.output_bytes <= e.input_bytes { GREEN } else { ORANGE };
+                let color = if stale { MUTED() } else if e.output_bytes <= e.input_bytes { GREEN } else { ORANGE };
                 (s, color)
             }
-            Some((k, None)) if *k == key => (tr!("Не удалось оценить размер", "Could not estimate the size").into(), MUTED),
-            _ => (tr!("Оцениваю размер…", "Estimating size…").into(), MUTED),
+            Some((k, None)) if *k == key => (tr!("Не удалось оценить размер", "Could not estimate the size").into(), MUTED()),
+            _ => (tr!("Оцениваю размер…", "Estimating size…").into(), MUTED()),
         }
     }
 
@@ -131,23 +131,23 @@ impl ConvertDialog {
 
 fn section(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
-    ui.label(RichText::new(text).size(13.0).color(TEXT_SOFT));
+    ui.label(RichText::new(text).size(13.0).color(TEXT_SOFT()));
 }
 
 /// A format tile: name on top, short hint below, highlighted when selected.
 fn format_tile(ui: &mut Ui, f: ImageFormat, selected: bool, width: f32) -> Response {
     let (r, resp) = ui.allocate_exact_size(vec2(width, 34.0), Sense::click());
     let (fill, stroke) = if selected {
-        (BLUE_SOFT, BLUE)
+        (BLUE_SOFT(), BLUE)
     } else if resp.hovered() {
-        (HOVER, mix(BORDER, BLUE, 0.4))
+        (HOVER(), mix(BORDER(), BLUE, 0.4))
     } else {
-        (INPUT_BG, BORDER)
+        (INPUT_BG(), BORDER())
     };
     let p = ui.painter();
-    p.rect(r, 8.0, fill, Stroke::new(1.0, stroke));
-    let g = p.layout_no_wrap(f.label().to_string(), semibold(13.5), if selected { BLUE } else { TEXT });
-    p.galley(r.center() - g.size() / 2.0, g, TEXT);
+    p.rect(r, rad(8.0), fill, Stroke::new(1.0, stroke), eframe::egui::StrokeKind::Middle);
+    let g = p.layout_no_wrap(f.label().to_string(), semibold(13.5), if selected { BLUE } else { TEXT() });
+    p.galley(r.center() - g.size() / 2.0, g, TEXT());
     resp.on_hover_text(f.hint()).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -158,9 +158,9 @@ impl QuokkaApp {
             self.toast(tr!("Выберите изображения или папки с ними", "Select images or folders with images"), true);
             return;
         }
-        let opts = ctx.data(|d| d.get_temp::<ConvertOptions>(Id::new("convert-opts"))).unwrap_or_default();
+        let opts = ctx.data(|d| d.get_temp::<ConvertOptions>(Id::unique("convert-opts"))).unwrap_or_default();
         // by default the results go next to the originals; «В папку» offers the other panel, like F5
-        let to_folder = ctx.data(|d| d.get_temp::<bool>(Id::new("convert-to-folder"))).unwrap_or(false);
+        let to_folder = ctx.data(|d| d.get_temp::<bool>(Id::unique("convert-to-folder"))).unwrap_or(false);
         let dest = self.dest_dir().display().to_string();
         let key = size_key(&opts);
         self.modal = Modal::Convert(Box::new(ConvertDialog {
@@ -208,7 +208,7 @@ impl QuokkaApp {
                     }
                 });
             }
-            ui.label(RichText::new(d.opts.format.hint()).size(12.5).color(MUTED));
+            ui.label(RichText::new(d.opts.format.hint()).size(12.5).color(MUTED()));
 
             // ── quality
             let f = d.opts.format;
@@ -229,7 +229,7 @@ impl QuokkaApp {
                     50..=74 => tr!("Заметно меньше, мелкие артефакты", "Much smaller, minor artifacts"),
                     _ => tr!("Очень маленькие файлы, заметные артефакты", "Tiny files, visible artifacts"),
                 };
-                ui.label(RichText::new(tip).size(12.5).color(MUTED));
+                ui.label(RichText::new(tip).size(12.5).color(MUTED()));
             } else if f == ImageFormat::Png {
                 section(ui, tr!("Сжатие (без потерь)", "Compression (lossless)"));
                 ui.horizontal(|ui| {
@@ -239,23 +239,23 @@ impl QuokkaApp {
                 });
             }
             if f == ImageFormat::Jpeg {
-                ui.label(RichText::new(tr!("Прозрачные области станут белыми", "Transparent areas become white")).size(12.5).color(MUTED));
+                ui.label(RichText::new(tr!("Прозрачные области станут белыми", "Transparent areas become white")).size(12.5).color(MUTED()));
             }
 
             // ── size estimate
             ui.add_space(2.0);
             let (text, color) = d.estimate_text();
-            egui::Frame::none().fill(INPUT_BG).rounding(8.0).inner_margin(vec2(12.0, 9.0)).show(ui, |ui| {
+            egui::Frame::NONE.fill(INPUT_BG()).corner_radius(rad(8.0)).inner_margin(vec2(12.0, 9.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(tr!("Размер после", "Size after")).size(13.0).color(TEXT_SOFT));
+                    ui.label(RichText::new(tr!("Размер после", "Size after")).size(13.0).color(TEXT_SOFT()));
                     ui.label(RichText::new(text).size(14.0).strong().color(color));
                     if d.running.is_some() {
                         ui.add(egui::Spinner::new().size(14.0));
                     }
                 });
                 if let Some(note) = d.estimate_note() {
-                    ui.label(RichText::new(note).size(12.0).color(MUTED));
+                    ui.label(RichText::new(note).size(12.0).color(MUTED()));
                 }
             });
 
@@ -275,7 +275,7 @@ impl QuokkaApp {
                 }
             }
             ui.horizontal(|ui| {
-                ui.label(RichText::new(tr!("Добавить к имени", "Add to name")).size(13.0).color(TEXT_SOFT));
+                ui.label(RichText::new(tr!("Добавить к имени", "Add to name")).size(13.0).color(TEXT_SOFT()));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.opts.suffix).desired_width(140.0).margin(vec2(8.0, 6.0)).font(mono(14.0)));
                 if d.first {
                     d.first = false;
@@ -300,7 +300,7 @@ impl QuokkaApp {
                 if btn(ui, tr!("Конвертировать", "Convert"), PURPLE, Color32::WHITE).clicked() {
                     submit = true;
                 }
-                if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                     cancel = true;
                 }
             });
@@ -310,8 +310,8 @@ impl QuokkaApp {
             d.focus_dest = d.to_folder;
         }
         ctx.data_mut(|m| {
-            m.insert_temp(Id::new("convert-opts"), d.opts.clone());
-            m.insert_temp(Id::new("convert-to-folder"), d.to_folder);
+            m.insert_temp(Id::unique("convert-opts"), d.opts.clone());
+            m.insert_temp(Id::unique("convert-to-folder"), d.to_folder);
         });
         if cancel {
             return false;

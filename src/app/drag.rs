@@ -86,7 +86,7 @@ impl QuokkaApp {
         if down {
             // left the window (or reached its edge — a maximized window has nowhere else
             // to go): hand the drag over to the OS so it can land in Explorer etc.
-            let outside = pos.map_or(true, |p| !ctx.screen_rect().shrink(6.0).contains(p));
+            let outside = pos.map_or(true, |p| !ctx.content_rect().shrink(6.0).contains(p));
             if outside && self.hwnd != 0 && cfg!(windows) {
                 let d = self.file_drag.take().expect("checked above");
                 if d.sources.iter().any(|s| quokka_infra::archive::is_member(s)) {
@@ -131,7 +131,7 @@ impl QuokkaApp {
             (
                 !i.raw.hovered_files.is_empty(),
                 paths(&i.raw.hovered_files),
-                i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect::<Vec<_>>(),
+                i.raw.dropped_files.iter().map(|f| f.path()).filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf()).collect::<Vec<_>>(),
             )
         });
         if !hovering && dropped.is_empty() {
@@ -168,14 +168,14 @@ impl QuokkaApp {
 
 /// Highlight the drop target and show what will happen next to the cursor.
 fn paint(ctx: &egui::Context, pos: Pos2, sources: &[PathBuf], target: Option<&Target>, mv: Option<bool>) {
-    let p = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("file-dnd")));
+    let p = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::unique("file-dnd")));
     let ok = target.is_some_and(|t| t.ok);
     if let Some(t) = target.filter(|t| t.ok) {
         p.rect(
             t.highlight.shrink(1.0),
-            8.0,
+            rad(8.0),
             Color32::from_rgba_unmultiplied(22, 119, 255, 22),
-            Stroke::new(2.0, BLUE),
+            Stroke::new(2.0, BLUE), eframe::egui::StrokeKind::Middle,
         );
     }
     if sources.is_empty() {
@@ -189,18 +189,18 @@ fn paint(ctx: &egui::Context, pos: Pos2, sources: &[PathBuf], target: Option<&Ta
         _ => trf!("{} — сюда нельзя", "{} — cannot drop here", what(sources)),
     };
     let hint = tr!("Ctrl — копировать · Shift — переместить", "Ctrl — copy · Shift — move");
-    let g1 = p.layout_no_wrap(title, semibold(14.0), if ok { TEXT } else { MUTED });
-    let g2 = p.layout_no_wrap(hint.into(), regular(12.5), MUTED);
+    let g1 = p.layout_no_wrap(title, semibold(14.0), if ok { TEXT() } else { MUTED() });
+    let g2 = p.layout_no_wrap(hint.into(), regular(12.5), MUTED());
     let w = g1.size().x.max(g2.size().x) + 24.0;
     let h = g1.size().y + g2.size().y + 20.0;
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let mut at = pos + vec2(18.0, 16.0);
     at.x = at.x.min(screen.right() - w - 4.0);
     at.y = at.y.min(screen.bottom() - h - 4.0);
     let r = Rect::from_min_size(at, vec2(w, h));
-    p.rect(r.translate(vec2(0.0, 2.0)), 9.0, Color32::from_black_alpha(18), Stroke::NONE);
-    p.rect(r, 9.0, CARD, Stroke::new(1.0, if ok { BLUE } else { BORDER }));
+    p.rect(r.translate(vec2(0.0, 2.0)), rad(9.0), Color32::from_black_alpha(18), Stroke::NONE, eframe::egui::StrokeKind::Middle);
+    p.rect(r, rad(9.0), CARD(), Stroke::new(1.0, if ok { BLUE } else { BORDER() }), eframe::egui::StrokeKind::Middle);
     let y2 = r.top() + 8.0 + g1.size().y + 4.0;
-    p.galley(r.min + vec2(12.0, 8.0), g1, TEXT);
-    p.galley(pos2(r.left() + 12.0, y2), g2, MUTED);
+    p.galley(r.min + vec2(12.0, 8.0), g1, TEXT());
+    p.galley(pos2(r.left() + 12.0, y2), g2, MUTED());
 }

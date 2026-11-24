@@ -68,13 +68,13 @@ mod imp {
 
     struct ComPtr(*mut c_void);
     impl ComPtr {
-        unsafe fn vtable<T>(&self) -> &T {
+        unsafe fn vtable<T>(&self) -> &T { unsafe {
             &**(self.0 as *const *const T)
-        }
-        unsafe fn query(&self, iid: &GUID) -> Option<ComPtr> {
+        }}
+        unsafe fn query(&self, iid: &GUID) -> Option<ComPtr> { unsafe {
             let mut out = ptr::null_mut();
             ((self.vtable::<UnknownVtbl>().query)(self.0, iid, &mut out) >= 0 && !out.is_null()).then(|| ComPtr(out))
-        }
+        }}
     }
     impl Drop for ComPtr {
         fn drop(&mut self) {
@@ -123,7 +123,7 @@ mod imp {
         path.as_os_str().encode_wide().chain(Some(0)).collect()
     }
 
-    unsafe fn parse(path: &Path) -> Result<Pidl, String> {
+    unsafe fn parse(path: &Path) -> Result<Pidl, String> { unsafe {
         let w = wide(path);
         let mut pidl = ptr::null_mut();
         let hr = SHParseDisplayName(w.as_ptr(), ptr::null_mut(), &mut pidl, 0, ptr::null_mut());
@@ -131,19 +131,19 @@ mod imp {
             return Err(format!("{}: HRESULT 0x{:08X}", path.display(), hr as u32));
         }
         Ok(Pidl(pidl))
-    }
+    }}
 
     /// The parent folder of `pidl` and the item's ID relative to it (points into `pidl`).
-    unsafe fn bind_parent(pidl: &Pidl) -> Result<(ComPtr, *const ITEMIDLIST), String> {
+    unsafe fn bind_parent(pidl: &Pidl) -> Result<(ComPtr, *const ITEMIDLIST), String> { unsafe {
         let mut folder = ptr::null_mut();
         let mut last = ptr::null_mut();
         check(SHBindToParent(pidl.0, &IID_SHELL_FOLDER, &mut folder, &mut last))?;
         Ok((ComPtr(folder), last))
-    }
+    }}
 
     /// Context menu of `items` (they must share one parent folder), or of the empty
     /// area of `background` when `items` is empty.
-    unsafe fn context_menu(hwnd: HWND, items: &[PathBuf], background: &Path) -> Result<(ComPtr, Menu), String> {
+    unsafe fn context_menu(hwnd: HWND, items: &[PathBuf], background: &Path) -> Result<(ComPtr, Menu), String> { unsafe {
         let mut obj = ptr::null_mut();
         if items.is_empty() {
             let pidl = parse(background)?;
@@ -179,7 +179,7 @@ mod imp {
         }
         check((obj.vtable::<MenuVtbl>().query_menu)(obj.0, menu.0, 0, FIRST_ID, LAST_ID, flags))?;
         Ok((obj, menu))
-    }
+    }}
 
     /// The menu object that draws owner-drawn items and fills submenus ("Send to",
     /// "Open with") on demand, with the interface level it supports.
@@ -188,7 +188,7 @@ mod imp {
         level3: bool,
     }
 
-    unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, data: usize) -> LRESULT {
+    unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, data: usize) -> LRESULT { unsafe {
         if matches!(msg, WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR) {
             let h = &*(data as *const Handler);
             let vt = h.obj.vtable::<MenuVtbl>();
@@ -202,7 +202,7 @@ mod imp {
             }
         }
         DefSubclassProc(hwnd, msg, wp, lp)
-    }
+    }}
 
     struct Subclass(HWND);
     impl Drop for Subclass {
@@ -212,7 +212,7 @@ mod imp {
     }
 
     /// Canonical verb of a command ("delete", "rename", "properties" …), if it has one.
-    unsafe fn verb(obj: &ComPtr, command: u32) -> String {
+    unsafe fn verb(obj: &ComPtr, command: u32) -> String { unsafe {
         let mut buf = [0u16; 128];
         let hr = (obj.vtable::<MenuVtbl>().get_command_string)(
             obj.0,
@@ -227,7 +227,7 @@ mod imp {
         }
         let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         String::from_utf16_lossy(&buf[..n])
-    }
+    }}
 
     /// What the user picked in the Windows menu.
     #[derive(Debug, Clone, PartialEq, Eq)]

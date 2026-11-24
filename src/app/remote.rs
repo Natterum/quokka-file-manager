@@ -98,29 +98,29 @@ impl ConnectDialog {
         let on = self.selected == Some(i);
         let p = ui.painter();
         if confirming {
-            p.rect_filled(rect, 5.0, Color32::from_rgb(254, 236, 236));
+            p.rect_filled(rect, rad(5.0), DANGER_SOFT());
         } else if on {
-            p.rect_filled(rect, 5.0, BLUE_SOFT);
+            p.rect_filled(rect, rad(5.0), BLUE_SOFT());
         } else if hovered {
-            p.rect_filled(rect, 5.0, INPUT_BG);
+            p.rect_filled(rect, rad(5.0), INPUT_BG());
         }
 
         let buttons_w = 4.0 * BTN + 3.0 * GAP;
         let text_right = rect.right() - buttons_w - 8.0;
         let text_left = rect.left() + 8.0;
-        let text_col = if busy { MUTED } else { TEXT };
+        let text_col = if busy { MUTED() } else { TEXT() };
         if confirming {
             let g = p.layout_no_wrap(tr!("Удалить?", "Delete?").to_string(), semibold(13.5), RED);
             p.galley(pos2(text_left, rect.center().y - g.size().y / 2.0), g, RED);
         } else {
             let proto = Site::parse_url(&c.url).map(|s| s.protocol.label()).unwrap_or("?");
-            let pg = p.layout_no_wrap(proto.to_string(), semibold(11.5), MUTED);
+            let pg = p.layout_no_wrap(proto.to_string(), semibold(11.5), MUTED());
             let pw = pg.size().x;
-            p.galley(pos2(text_left, rect.center().y - pg.size().y / 2.0), pg, MUTED);
+            p.galley(pos2(text_left, rect.center().y - pg.size().y / 2.0), pg, MUTED());
             let name_left = text_left + pw.max(34.0) + 6.0;
             let mut job = egui::text::LayoutJob::simple_singleline(c.title().to_string(), regular(13.5), text_col);
             job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - name_left).max(10.0));
-            let g = ui.fonts(|f| f.layout_job(job));
+            let g = ui.fonts_mut(|f| f.layout_job(job));
             p.galley(pos2(name_left, rect.center().y - g.size().y / 2.0), g, text_col);
         }
 
@@ -135,7 +135,7 @@ impl ConnectDialog {
         let button = |ui: &mut Ui, slot: u8, k: u8, g: Glyph, col: Color32, tip: &str| {
             let x = x0 + f32::from(slot) * (BTN + GAP);
             let r = Rect::from_min_size(pos2(x, rect.center().y - BTN / 2.0), vec2(BTN, BTN));
-            row_button(ui, r, ui.id().with(("saved-conn", i, k)), g, col, !busy, tip)
+            row_button(ui, r, ui.scope_id().with(("saved-conn", i, k)), g, col, !busy, tip)
         };
         if confirming {
             // two buttons in the slots of «edit» and «delete»
@@ -143,18 +143,18 @@ impl ConnectDialog {
                 self.confirm_delete = None;
                 act = RowAction::Delete;
             }
-            if button(ui, 3, 4, Glyph::Close, TEXT_SOFT, tr!("Не удалять", "Keep it")).clicked() {
+            if button(ui, 3, 4, Glyph::Close, TEXT_SOFT(), tr!("Не удалять", "Keep it")).clicked() {
                 self.confirm_delete = None;
             }
         } else {
             let sftp = Site::parse_url(&c.url).is_some_and(|s| s.protocol == Protocol::Sftp);
-            if sftp && button(ui, 0, 5, Glyph::Terminal, TEXT_SOFT, tr!("SSH-терминал (PuTTY / ssh)", "SSH terminal (PuTTY / ssh)")).clicked() {
+            if sftp && button(ui, 0, 5, Glyph::Terminal, TEXT_SOFT(), tr!("SSH-терминал (PuTTY / ssh)", "SSH terminal (PuTTY / ssh)")).clicked() {
                 act = RowAction::Terminal;
             }
             if button(ui, 1, 0, Glyph::ArrowRight, BLUE, tr!("Подключиться", "Connect")).clicked() {
                 act = RowAction::Connect;
             }
-            if button(ui, 2, 1, Glyph::Pencil, TEXT_SOFT, tr!("Изменить", "Edit")).clicked() {
+            if button(ui, 2, 1, Glyph::Pencil, TEXT_SOFT(), tr!("Изменить", "Edit")).clicked() {
                 act = RowAction::Edit;
             }
             if button(ui, 3, 2, Glyph::Trash, RED, tr!("Удалить", "Delete")).clicked() {
@@ -349,27 +349,27 @@ impl ConnectDialog {
         let mut trust = false;
         let mut outcome = Outcome::Open;
 
-        let width = 840.0_f32.min(ctx.screen_rect().width() - 48.0);
+        let width = 840.0_f32.min(ctx.content_rect().width() - 48.0);
         dialog(ctx, "server-connect", width, |ui| {
             dialog_header(ui, Glyph::Cloud, BLUE, tr!("Подключение к серверу", "Connect to a server"),
                 Some(tr!("SFTP, FTP и FTPS · сохранённые подключения слева", "SFTP, FTP and FTPS · saved connections on the left")));
 
             if let Some(fp) = self.unknown_key.clone() {
                 let site = self.site().map(|s| s.authority()).unwrap_or_default();
-                ui.label(RichText::new(trf!("Сервер {site} подключается впервые.", "First connection to {site}.")).color(TEXT));
+                ui.label(RichText::new(trf!("Сервер {site} подключается впервые.", "First connection to {site}.")).color(TEXT()));
                 ui.add_space(6.0);
-                ui.label(RichText::new(tr!("Отпечаток ключа сервера:", "Server key fingerprint:")).color(MUTED).size(13.0));
-                ui.label(RichText::new(&fp).monospace().color(TEXT));
+                ui.label(RichText::new(tr!("Отпечаток ключа сервера:", "Server key fingerprint:")).color(MUTED()).size(13.0));
+                ui.label(RichText::new(&fp).monospace().color(TEXT()));
                 ui.add_space(6.0);
                 ui.label(RichText::new(tr!(
                     "Сверьте его с отпечатком, который даёт администратор сервера. Ключ будет записан в ~/.ssh/known_hosts.",
-                    "Compare it with the fingerprint from the server administrator. The key will be saved to ~/.ssh/known_hosts.")).color(MUTED).size(13.0));
+                    "Compare it with the fingerprint from the server administrator. The key will be saved to ~/.ssh/known_hosts.")).color(MUTED()).size(13.0));
                 ui.add_space(14.0);
                 buttons_row(ui, |ui| {
                     if btn(ui, tr!("Доверять и подключить", "Trust and connect"), BLUE, Color32::WHITE).clicked() {
                         trust = true;
                     }
-                    if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                    if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                         self.unknown_key = None;
                     }
                 });
@@ -395,7 +395,7 @@ impl ConnectDialog {
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical().id_salt("saved-connections").max_height(300.0).show(ui, |ui| {
                         if saved.is_empty() {
-                            ui.label(RichText::new(tr!("Сохранённых пока нет", "Nothing saved yet")).color(MUTED).size(13.0));
+                            ui.label(RichText::new(tr!("Сохранённых пока нет", "Nothing saved yet")).color(MUTED()).size(13.0));
                         }
                         for (i, c) in saved.iter().enumerate() {
                             match self.saved_row(ui, i, c, busy) {
@@ -426,14 +426,14 @@ impl ConnectDialog {
                                 ui.add(egui::TextEdit::singleline(text).password(password).hint_text(hint)
                                     .desired_width(width).margin(vec2(8.0, 6.0)).font(regular(14.5)))
                             };
-                            ui.label(RichText::new(tr!("Название", "Name")).color(TEXT));
+                            ui.label(RichText::new(tr!("Название", "Name")).color(TEXT()));
                             let r = field(ui, &mut self.name, tr!("необязательно", "optional"), false, 380.0);
                             if std::mem::take(&mut self.focus_name) {
                                 r.request_focus();
                             }
                             ui.end_row();
 
-                            ui.label(RichText::new(tr!("Протокол", "Protocol")).color(TEXT));
+                            ui.label(RichText::new(tr!("Протокол", "Protocol")).color(TEXT()));
                             let labels: Vec<&str> = Protocol::ALL.iter().map(|p| p.label()).collect();
                             let cur = Protocol::ALL.iter().position(|p| *p == self.protocol).unwrap_or(0);
                             if let Some(i) = segmented(ui, &labels, cur) {
@@ -441,19 +441,19 @@ impl ConnectDialog {
                             }
                             ui.end_row();
 
-                            ui.label(RichText::new(tr!("Сервер", "Server")).color(TEXT));
+                            ui.label(RichText::new(tr!("Сервер", "Server")).color(TEXT()));
                             ui.horizontal(|ui| {
                                 let r = field(ui, &mut self.host, "example.com", false, 250.0);
                                 if self.first {
                                     self.first = false;
                                     if self.host.is_empty() { r.request_focus(); } else { self.focus_secret = true; }
                                 }
-                                ui.label(RichText::new(tr!("Порт", "Port")).color(TEXT));
+                                ui.label(RichText::new(tr!("Порт", "Port")).color(TEXT()));
                                 field(ui, &mut self.port, "22", false, 64.0);
                             });
                             ui.end_row();
 
-                            ui.label(RichText::new(tr!("Пользователь", "User")).color(TEXT));
+                            ui.label(RichText::new(tr!("Пользователь", "User")).color(TEXT()));
                             let hint = if self.protocol == Protocol::Sftp { "root" } else { "anonymous" };
                             field(ui, &mut self.user, hint, false, 380.0);
                             ui.end_row();
@@ -466,10 +466,10 @@ impl ConnectDialog {
                                 ui.end_row();
                             }
                             if self.use_key {
-                                ui.label(RichText::new(tr!("Ключ", "Key")).color(TEXT));
+                                ui.label(RichText::new(tr!("Ключ", "Key")).color(TEXT()));
                                 ui.horizontal(|ui| {
                                     field(ui, &mut self.key_file, r"C:\Users\…\.ssh\id_ed25519", false, 280.0);
-                                    if btn(ui, tr!("Обзор…", "Browse…"), INPUT_BG, TEXT).clicked() {
+                                    if btn(ui, tr!("Обзор…", "Browse…"), INPUT_BG(), TEXT()).clicked() {
                                         let start = (!self.key_file.trim().is_empty()).then(|| PathBuf::from(self.key_file.trim()));
                                         if let Some(p) = quokka_infra::pick::key_file(hwnd, start.as_deref()) {
                                             self.key_file = p.display().to_string();
@@ -486,7 +486,7 @@ impl ConnectDialog {
                             } else {
                                 (tr!("Пароль", "Password"), "")
                             };
-                            ui.label(RichText::new(label).color(TEXT));
+                            ui.label(RichText::new(label).color(TEXT()));
                             let r = field(ui, &mut self.secret, hint, true, 380.0);
                             if self.focus_secret {
                                 self.focus_secret = false;
@@ -517,21 +517,21 @@ impl ConnectDialog {
                     buttons_row(ui, |ui| {
                         if busy {
                             ui.add(egui::Spinner::new());
-                            ui.label(RichText::new(tr!("Подключение…", "Connecting…")).color(MUTED));
+                            ui.label(RichText::new(tr!("Подключение…", "Connecting…")).color(MUTED()));
                         } else {
                             if btn(ui, tr!("Подключить", "Connect"), BLUE, Color32::WHITE).clicked() {
                                 submit = true;
                             }
-                            if btn(ui, tr!("Сохранить", "Save"), INPUT_BG, TEXT).clicked() {
+                            if btn(ui, tr!("Сохранить", "Save"), INPUT_BG(), TEXT()).clicked() {
                                 outcome = Outcome::Save;
                             }
                             if let Some(i) = self.selected {
-                                if btn(ui, tr!("Удалить", "Delete"), INPUT_BG, RED).clicked() {
+                                if btn(ui, tr!("Удалить", "Delete"), INPUT_BG(), RED).clicked() {
                                     outcome = Outcome::Delete(i);
                                 }
                             }
                         }
-                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                             cancel = true;
                         }
                     });
@@ -563,9 +563,9 @@ impl ConnectDialog {
 fn row_button(ui: &mut Ui, r: Rect, id: Id, g: Glyph, color: Color32, enabled: bool, tip: &str) -> Response {
     let resp = ui.interact(r, id, if enabled { Sense::click() } else { Sense::hover() });
     if enabled && resp.hovered() {
-        ui.painter().rect_filled(r, 5.0, TRACK);
+        ui.painter().rect_filled(r, rad(5.0), TRACK());
     }
-    let col = if enabled { color } else { Color32::from_rgb(200, 205, 214) };
+    let col = if enabled { color } else { DISABLED() };
     icons::glyph(ui.painter(), r.shrink(6.0), g, col);
     resp.on_hover_text(tip)
 }
@@ -666,19 +666,96 @@ impl QuokkaApp {
 
     /// Close the connection of the active tab's server and leave its folders.
     pub(super) fn disconnect_current(&mut self) {
-        let Some((site, _)) = remote::split(&self.ap_ref().path) else {
+        let path = self.ap_ref().path.clone();
+        if remote::split(&path).is_none() {
             self.toast(tr!("Откройте папку на сервере, чтобы отключиться", "Open a server folder to disconnect"), true);
             return;
-        };
+        }
+        self.disconnect_from(&path);
+    }
+
+    /// Close the connection of the server `path` is on. Its tabs are closed; a pane
+    /// that has nothing else keeps one tab, sent back to the last local folder of
+    /// its history (or «This PC»). The server is also dropped from the histories.
+    pub(super) fn disconnect_from(&mut self, path: &std::path::Path) {
+        let Some((site, _)) = remote::split(path) else { return };
         net::disconnect(&site);
+        let on_site = |p: &std::path::Path| remote::split(p).is_some_and(|(s, _)| s == site);
         for side in &mut self.sides {
-            for tab in &mut side.tabs {
-                if remote::split(&tab.path).is_some_and(|(s, _)| s == site) {
+            let keep: Vec<bool> = side.tabs.iter().map(|t| !on_site(&t.path)).collect();
+            if keep.iter().all(|k| *k) {
+                // nothing of this server here
+            } else if keep.iter().any(|k| *k) {
+                // as with closing a tab: a closed current tab hands over to its right neighbour
+                let cur = side.cur;
+                let next = (cur..keep.len()).find(|&i| keep[i]).or_else(|| (0..cur).rev().find(|&i| keep[i])).unwrap_or(0);
+                let new_cur = keep[..next].iter().filter(|k| **k).count();
+                let mut i = 0;
+                side.tabs.retain(|_| {
+                    i += 1;
+                    keep[i - 1]
+                });
+                side.cur = new_cur;
+            } else {
+                // every tab was on the server: keep the current one and bring it home
+                let mut tab = side.tabs.swap_remove(side.cur);
+                side.tabs.clear();
+                let home = tab.back.iter().rev().find(|p| !on_site(p) && !p.as_os_str().is_empty() && !is_remote(p)).cloned();
+                if home.is_none_or(|h| tab.navigate(h).is_err()) {
                     let _ = tab.navigate(PathBuf::new());
                 }
+                side.tabs.push(tab);
+                side.cur = 0;
             }
         }
+        self.forget_site(&site);
         self.toast(trf!("Отключено: {}", "Disconnected: {}", site.url()), false);
+    }
+
+    /// Drop `site` from every tab's back/forward history and from the waiting list:
+    /// its connection is closed, so those steps would only lead to an error.
+    fn forget_site(&mut self, site: &Site) {
+        let on_site = |p: &std::path::Path| remote::split(p).is_some_and(|(s, _)| s == *site);
+        for side in &mut self.sides {
+            for tab in &mut side.tabs {
+                tab.back.retain(|p| !on_site(p));
+                tab.forward.retain(|p| !on_site(p));
+            }
+        }
+        self.idle_sites.retain(|s| s != site);
+    }
+
+    /// A tab showing `path` was closed. When it was the last tab on its server, the
+    /// connection is closed too — right away, or once the queue is done with it.
+    pub(super) fn tab_closed(&mut self, path: &std::path::Path) {
+        let Some((site, _)) = remote::split(path) else { return };
+        // a phone has no session to close
+        if site.protocol == Protocol::Mtp {
+            return;
+        }
+        if !self.idle_sites.contains(&site) {
+            self.idle_sites.push(site);
+        }
+        self.release_idle_sites();
+    }
+
+    /// Close the connections of `idle_sites` that no tab shows and no queued or
+    /// running operation uses. A server opened again in a tab leaves the list.
+    pub(super) fn release_idle_sites(&mut self) {
+        for site in std::mem::take(&mut self.idle_sites) {
+            let on_site = |p: &std::path::Path| remote::split(p).is_some_and(|(s, _)| s == site);
+            if self.sides.iter().any(|s| s.tabs.iter().any(|t| on_site(&t.path))) {
+                continue;
+            }
+            if self.queue.tasks.iter().any(|t| !t.is_finished() && t.spec.paths().into_iter().any(on_site)) {
+                self.idle_sites.push(site);
+                continue;
+            }
+            if net::is_connected(&site) {
+                net::disconnect(&site);
+                self.forget_site(&site);
+            }
+        }
     }
 }
 

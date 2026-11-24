@@ -17,7 +17,7 @@ use quokka_domain::remote::{is_device, is_remote};
 use crate::theme::{self, *};
 use crate::util::*;
 use eframe::egui::{
-    self, pos2, vec2, Align, Align2, Color32, Id, Key, Layout, Margin, Modifiers, Rect, Response, RichText, Rounding,
+    self, pos2, vec2, Align, Align2, Color32, Id, Key, Layout, Margin, Modifiers, Rect, Response, RichText, CornerRadius,
     Sense, Stroke, Ui,
 };
 use std::fs;
@@ -44,13 +44,6 @@ const TABS_H: f32 = 34.0;
 const TOOL_H: f32 = 54.0;
 const HEAD_H: f32 = 30.0;
 const FOOT_H: f32 = 40.0;
-const SEL_ACTIVE: Color32 = Color32::from_rgb(214, 231, 255);
-const SEL_INACTIVE: Color32 = Color32::from_rgb(236, 240, 246);
-const MARKED_BG: Color32 = Color32::from_rgb(255, 244, 214);
-const MARKED_FG: Color32 = Color32::from_rgb(196, 118, 0);
-const HEADER_BG: Color32 = Color32::from_rgb(243, 247, 252);
-const ROW_LINE: Color32 = Color32::from_rgb(238, 241, 246);
-const TAB_ACTIVE: Color32 = Color32::from_rgb(219, 234, 254);
 
 /// Brief launch acknowledgement; the OS does not report when the external app is ready.
 #[derive(Clone)]
@@ -62,7 +55,7 @@ struct OpenFeedback {
 const OPEN_FEEDBACK_SECS: f64 = 1.2;
 
 fn open_feedback_id() -> Id {
-    Id::new("file-open-feedback")
+    Id::unique("file-open-feedback")
 }
 
 /// egui counts double clicks globally, without checking the clicked row, and turns a
@@ -81,7 +74,7 @@ const DOUBLE_CLICK_DIST: f32 = 6.0;
 fn begin_row_clicks(ctx: &egui::Context) {
     if ctx.input(|i| i.pointer.any_click() || i.pointer.is_decidedly_dragging()) {
         ctx.data_mut(|d| {
-            let clicks = d.get_temp_mut_or_default::<RowClicks>(Id::new("row-clicks"));
+            let clicks = d.get_temp_mut_or_default::<RowClicks>(Id::unique("row-clicks"));
             clicks.previous = clicks.current.take();
         });
     }
@@ -106,7 +99,7 @@ fn row_double_clicked(resp: &Response, target: Id) -> bool {
     // `double_clicked()` locks the context too and would deadlock inside it.
     let both_in_frame = releases.len() >= 2 && near(releases[releases.len() - 2]) && resp.double_clicked();
     resp.ctx.data_mut(|d| {
-        let clicks = d.get_temp_mut_or_default::<RowClicks>(Id::new("row-clicks"));
+        let clicks = d.get_temp_mut_or_default::<RowClicks>(Id::unique("row-clicks"));
         let paired = clicks.previous.is_some_and(|(id, t, p)| id == target && now - t <= delay && near(p));
         let open = plain && (paired || both_in_frame);
         // Modified clicks select files and must also break the opening sequence;
@@ -191,6 +184,12 @@ pub enum Action {
     CancelSizes,
     Connect,
     Disconnect,
+    /// Close the connection of the server (or device) this path is on.
+    DisconnectFrom(PathBuf),
+    /// A tab showing this folder was closed (its server may now be unused).
+    TabClosed(PathBuf),
+    /// Show this folder in the current tab of the pane opposite to the given one.
+    OpenInOtherPane(usize, PathBuf),
     CheckUpdates,
     ConvertImages,
     /// Regular expressions in the name filter on / off (Alt+R).
@@ -220,7 +219,7 @@ fn fkey_color(i: usize) -> Color32 {
         5 => GREEN,
         7 => RED,
         9 => ORANGE,
-        _ => SLATE,
+        _ => SLATE(),
     }
 }
 
@@ -287,15 +286,17 @@ impl Toast {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsGroup {
     View,
+    Appearance,
     Search,
     Sidebar,
     Keys,
 }
 
 impl SettingsGroup {
-    fn all() -> [(SettingsGroup, &'static str, Glyph); 4] {
+    fn all() -> [(SettingsGroup, &'static str, Glyph); 5] {
         [
         (SettingsGroup::View, tr!("Вид и файлы", "View and files"), Glyph::Eye),
+        (SettingsGroup::Appearance, tr!("Оформление", "Appearance"), Glyph::Image),
         (SettingsGroup::Search, tr!("Поиск", "Search"), Glyph::Search),
         (SettingsGroup::Sidebar, tr!("Избранное и меню", "Favorites and menu"), Glyph::Star),
         (SettingsGroup::Keys, tr!("Горячие клавиши", "Keyboard shortcuts"), Glyph::Keyboard),
@@ -310,6 +311,7 @@ impl SettingsGroup {
         let words = match self {
             SettingsGroup::Keys => return hotkeys::matches(q),
             SettingsGroup::View => tr!("колонки столбцы состав порядок расположение язык интерфейса english русский вид и файлы скрытые файлы иконки значки связанных приложений окно две панели внешний редактор команда f4 f11 f12 трей область уведомлений значок закрытии скрывать сворачивать несколько окон экземпляров запуск сеанс сессия вкладки восстанавливать", "columns visibility order arrangement interface language english russian view and files hidden files icons associated applications window two panes dual external editor command f4 f11 f12 tray notification area icon close hide minimize multiple windows instances startup session tabs restore"),
+            SettingsGroup::Appearance => tr!("оформление внешний вид шрифт скругление углов радиус тема светлая тёмная темная", "appearance look font typeface rounding corners radius theme light dark"),
             SettingsGroup::Search => tr!("поиск фильтр по имени регулярные выражения regex регистр букв ctrl+f alt+r", "search filter by name regular expressions regex case sensitive letters ctrl+f alt+r"),
             SettingsGroup::Sidebar => tr!("избранное и меню боковое меню подписи диски закладки порядок восстановить", "favorites and menu sidebar labels drives bookmarks order restore"),
         };
@@ -497,6 +499,9 @@ pub struct QuokkaApp {
     undo: Option<Undo>,
     /// Downloaded copies of server files to open once their copy job finishes.
     open_after: Vec<PathBuf>,
+    /// Servers whose last tab was closed; their connection is closed once the
+    /// queue no longer uses them (see `release_idle_sites`).
+    idle_sites: Vec<quokka_domain::remote::Site>,
     drives: Vec<PathBuf>,
     /// Kind, label and (total, free) bytes per drive, read in the background for the
     /// sidebar (a disconnected network drive can take seconds to answer).
@@ -551,7 +556,7 @@ pub(crate) fn waker(ctx: &egui::Context) -> Waker {
 }
 
 fn path_edit_id(idx: usize) -> Id {
-    Id::new(("path-edit", idx))
+    Id::unique(("path-edit", idx))
 }
 
 fn clipboard_actions(events: &mut Vec<egui::Event>, modifiers: Modifiers) -> Vec<Action> {
@@ -655,9 +660,9 @@ fn clipboard_operation(files: crate::clipboard::Files, dest: &std::path::Path) -
 
 impl QuokkaApp {
     pub fn new(cc: &eframe::CreationContext<'_>, start: Option<PathBuf>, updated: bool) -> Self {
-        theme::apply(&cc.egui_ctx);
         let home = config::home();
         let settings = Settings::load();
+        theme::apply(&cc.egui_ctx, &settings.appearance);
         hotkeys::install(hotkeys::Keymap::with_overrides(&settings.hotkeys));
         let services = quokka_infra::services(waker(&cc.egui_ctx));
         let drives = services.fs.drives();
@@ -696,6 +701,7 @@ impl QuokkaApp {
             modal: Modal::None,
             queue: Queue::default(),
             queue_open: false,
+            idle_sites: Vec::new(),
             quitting: false,
             allow_close: false,
             toast: None,
@@ -711,7 +717,7 @@ impl QuokkaApp {
             drive_read_at: HashMap::new(),
             services,
             actions: Vec::new(),
-            search_id: Id::new("search-box"),
+            search_id: Id::unique("search-box"),
             logo: logo::texture(&cc.egui_ctx, 128),
             ctx: cc.egui_ctx.clone(),
             side_drag: None,
@@ -928,6 +934,27 @@ impl QuokkaApp {
         p.filter_case = self.settings.case_sensitive;
         side.tabs.insert(side.cur + 1, p);
         side.cur += 1;
+    }
+
+    /// Replace the folder of the other pane's current tab with `path` (no new tab);
+    /// the focus stays where it was. In single-pane mode the second pane is shown.
+    fn open_in_other_pane(&mut self, from: usize, path: PathBuf) {
+        let to = 1 - from.min(1);
+        if !self.settings.dual {
+            self.settings.dual = true;
+            self.save_settings();
+        }
+        if let Some(q) = &self.quick_view {
+            if q.side == to {
+                self.quick_view = None;
+            }
+        }
+        if self.sides[to].panel().path == path && self.sides[to].panel().results.is_none() {
+            return;
+        }
+        if let Err(e) = self.sides[to].panel_mut().navigate(path) {
+            self.toast(e, true);
+        }
     }
 
     /// Tray icon, close-to-tray and folders handed over by another launch.
@@ -1158,6 +1185,9 @@ impl QuokkaApp {
             Action::Help => self.modal = Modal::Help,
             Action::Connect => self.open_connect(None),
             Action::Disconnect => self.disconnect_current(),
+            Action::DisconnectFrom(path) => self.disconnect_from(&path),
+            Action::TabClosed(path) => self.tab_closed(&path),
+            Action::OpenInOtherPane(from, path) => self.open_in_other_pane(from, path),
             Action::About => self.modal = Modal::About,
             Action::FindFiles => self.open_find(),
             Action::UndoDelete => match self.undo.take() {
@@ -1268,8 +1298,9 @@ impl QuokkaApp {
             Action::CloseTab => {
                 let side = &mut self.sides[self.active];
                 if side.tabs.len() > 1 {
-                    side.tabs.remove(side.cur);
+                    let closed = side.tabs.remove(side.cur);
                     side.cur = side.cur.min(side.tabs.len() - 1);
+                    self.tab_closed(&closed.path);
                 }
             }
             Action::AddCurrentFavorite => self.place_op(PlaceOp::Add, false),
@@ -1696,6 +1727,9 @@ impl QuokkaApp {
         if finished.is_empty() {
             return;
         }
+        if !self.idle_sites.is_empty() {
+            self.release_idle_sites();
+        }
         let dirs: Vec<PathBuf> = finished.iter().flat_map(|f| f.spec.touched_dirs()).collect();
         self.reload_dirs(&dirs);
         for f in &finished {
@@ -1737,17 +1771,17 @@ impl QuokkaApp {
 
     // ───────────────────────────── layout ─────────────────────────────
 
-    fn fkey_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("fkeys")
-            .exact_height(52.0)
+    fn fkey_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("fkeys")
+            .exact_size(52.0)
             .show_separator_line(false)
             .frame(
-                egui::Frame::none()
-                    .fill(CARD)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .inner_margin(Margin::symmetric(12.0, 8.0)),
+                egui::Frame::NONE
+                    .fill(CARD())
+                    .stroke(Stroke::new(1.0, BORDER()))
+                    .inner_margin(Margin::symmetric(12, 8)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 let avail = ui.available_rect_before_wrap();
                 let gap = 6.0;
                 let w = (avail.width() - gap * 11.0) / 12.0;
@@ -1765,13 +1799,13 @@ impl QuokkaApp {
                 for (i, slot) in slots.into_iter().enumerate() {
                     let Some((label, a)) = slot else { continue };
                     let r = Rect::from_min_size(pos2(avail.left() + i as f32 * (w + gap), avail.top()), vec2(w, avail.height()));
-                    let resp = ui.interact(r, Id::new(("fkey", i)), Sense::click());
+                    let resp = ui.interact(r, Id::unique(("fkey", i)), Sense::click());
                     if resp.hovered() {
-                        painter.rect_filled(r, 8.0, HOVER);
+                        painter.rect_filled(r, rad(8.0), HOVER());
                     }
                     let col = fkey_color(i);
                     let badge = Rect::from_min_size(pos2(r.left() + 4.0, r.center().y - 12.0), vec2(36.0, 24.0));
-                    painter.rect_filled(badge, 6.0, mix(col, Color32::WHITE, 0.84));
+                    painter.rect_filled(badge, rad(6.0), mix(col, CARD(), 0.84));
                     painter.text(badge.center(), Align2::CENTER_CENTER, format!("F{}", i + 1), semibold(13.0), mix(col, Color32::BLACK, 0.1));
                     let on = match a {
                         Action::ToggleHidden => Some(self.settings.show_hidden),
@@ -1783,7 +1817,7 @@ impl QuokkaApp {
                         Align2::LEFT_CENTER,
                         &label,
                         regular(13.5),
-                        TEXT,
+                        TEXT(),
                     );
                     if on == Some(true) {
                         painter.circle_filled(pos2(r.right() - 7.0, r.center().y), 3.0, BLUE);
@@ -1795,23 +1829,24 @@ impl QuokkaApp {
             });
     }
 
-    fn sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("sidebar")
-            .exact_width(if self.settings.sidebar_labels { 220.0 } else { 68.0 })
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
+        egui::Panel::left("sidebar")
+            .exact_size(if self.settings.sidebar_labels { 220.0 } else { 68.0 })
             .resizable(false)
             .show_separator_line(false)
             .frame(
-                egui::Frame::none()
-                    .fill(CARD)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .inner_margin(Margin::symmetric(12.0, 14.0)),
+                egui::Frame::NONE
+                    .fill(CARD())
+                    .stroke(Stroke::new(1.0, BORDER()))
+                    .inner_margin(Margin::symmetric(12, 14)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 // vertical divider: one physical pixel on the panel's own right edge, so the file
                 // panes drawn next to it cannot cover it (the frame stroke sits half outside)
                 let px = 1.0 / ctx.pixels_per_point();
                 let edge = ui.max_rect().expand2(vec2(12.0, 14.0));
-                ui.painter().vline(edge.right() - px / 2.0, edge.y_range(), Stroke::new(px, BORDER));
+                ui.painter().vline(edge.right() - px / 2.0, edge.y_range(), Stroke::new(px, BORDER()));
                 let cur = self.sides[self.active].panel().path.clone();
                 let labels = self.settings.sidebar_labels;
                 let looks: Vec<Look> = self.settings.places.iter().map(|pl| place_look(&mut self.icon_cache, ctx, pl)).collect();
@@ -1842,32 +1877,32 @@ impl QuokkaApp {
                             menu_title(ui, &place.name);
                             if menu_item_icon(ui, Some(Glyph::Pencil), tr!("Изменить название и значок…", "Edit name and icon…"), "", true, false).clicked() {
                                 op = Some(PlaceOp::Edit(i));
-                                ui.close_menu();
+                                ui.close();
                             }
                             if menu_item_icon(ui, Some(Glyph::ArrowUp), tr!("Переместить выше", "Move up"), "", i > 0, false).clicked() {
                                 op = Some(PlaceOp::Up(i));
-                                ui.close_menu();
+                                ui.close();
                             }
                             if menu_item_icon(ui, Some(Glyph::ArrowDown), tr!("Переместить ниже", "Move down"), "", i + 1 < n, false).clicked() {
                                 op = Some(PlaceOp::Down(i));
-                                ui.close_menu();
+                                ui.close();
                             }
                             let local = !place.path.as_os_str().is_empty() && (!is_remote(&place.path) || is_device(&place.path));
                             if cfg!(windows) && local {
                                 menu_sep(ui);
                                 if menu_item_icon(ui, Some(Glyph::Windows), tr!("Показать меню Windows", "Show Windows menu"), "", true, false).clicked() {
                                     side_actions.push(Action::WindowsMenuOf(place.path.clone()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if menu_item_icon(ui, Some(Glyph::Info), tr!("Свойства", "Properties"), "", true, false).clicked() {
                                     side_actions.push(Action::PropertiesOf(place.path.clone()));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                             menu_sep(ui);
                             if menu_item_icon(ui, Some(Glyph::Trash), tr!("Убрать из избранного", "Remove from favorites"), "", true, true).clicked() {
                                 op = Some(PlaceOp::Remove(i));
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     }
@@ -1883,14 +1918,14 @@ impl QuokkaApp {
                                 ui.painter().line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(3.0, BLUE));
                             }
                             if let Some(p) = pos {
-                                let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("side-ghost"));
+                                let layer = egui::LayerId::new(egui::Order::Tooltip, Id::unique("side-ghost"));
                                 let gp = ui.ctx().layer_painter(layer);
                                 let place = &self.settings.places[from];
-                                let galley = gp.layout_no_wrap(place.name.clone(), regular(13.5), TEXT);
+                                let galley = gp.layout_no_wrap(place.name.clone(), regular(13.5), TEXT());
                                 let gr = Rect::from_min_size(p + vec2(14.0, -16.0), vec2(galley.size().x + 46.0, 32.0));
-                                gp.rect(gr, 8.0, CARD, Stroke::new(1.0, BLUE));
+                                gp.rect(gr, rad(8.0), CARD(), Stroke::new(1.0, BLUE), eframe::egui::StrokeKind::Middle);
                                 draw_look(&gp, Rect::from_center_size(pos2(gr.left() + 18.0, gr.center().y), vec2(18.0, 18.0)), looks[from], BLUE);
-                                gp.galley(pos2(gr.left() + 34.0, gr.center().y - galley.size().y / 2.0), galley, TEXT);
+                                gp.galley(pos2(gr.left() + 34.0, gr.center().y - galley.size().y / 2.0), galley, TEXT());
                             }
                         } else {
                             if target != from && target != from + 1 {
@@ -1908,7 +1943,7 @@ impl QuokkaApp {
                     }
                     if self.settings.show_drives {
                         let (r, _) = ui.allocate_exact_size(vec2(w, 10.0), Sense::hover());
-                        ui.painter().line_segment([pos2(r.left() + 6.0, r.center().y), pos2(r.right() - 6.0, r.center().y)], Stroke::new(1.0, BORDER));
+                        ui.painter().line_segment([pos2(r.left() + 6.0, r.center().y), pos2(r.right() - 6.0, r.center().y)], Stroke::new(1.0, BORDER()));
                         let mut hovered = None;
                         for d in self.drives.clone() {
                             let info = self.drive(&d);
@@ -1937,7 +1972,7 @@ impl QuokkaApp {
                                     Align2::RIGHT_BOTTOM,
                                     root_label(&d).trim_end_matches(':'),
                                     semibold(10.0),
-                                    if cur == d { BLUE } else { TEXT_SOFT },
+                                    if cur == d { BLUE } else { TEXT_SOFT() },
                                 );
                             }
                             if resp.hovered() {
@@ -1954,7 +1989,7 @@ impl QuokkaApp {
                                 let mut item = |ui: &mut Ui, g: Glyph, text: &str, a: Action| {
                                     if menu_item_icon(ui, Some(g), text, "", true, false).clicked() {
                                         picked = Some(a);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 };
                                 item(ui, Glyph::ArrowRight, tr!("Открыть", "Open"), Action::GoTo(d.clone()));
@@ -1990,9 +2025,9 @@ impl QuokkaApp {
             });
     }
 
-    fn central(&mut self, ctx: &egui::Context) {
+    fn central(&mut self, ui: &mut egui::Ui) {
         let idle = self.idle();
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(CARD)).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(CARD())).show(ui, |ui| {
             let r = ui.max_rect();
             let mut outs = Vec::new();
             self.pane_rects = [None, None];
@@ -2004,7 +2039,7 @@ impl QuokkaApp {
             let qv_side = self.quick_view.as_ref().map(|q| q.side);
             if self.settings.dual || qv_side.is_some() {
                 let mid = r.center().x.round();
-                ui.painter().line_segment([pos2(mid, r.top()), pos2(mid, r.bottom())], Stroke::new(1.0, BORDER));
+                ui.painter().line_segment([pos2(mid, r.top()), pos2(mid, r.bottom())], Stroke::new(1.0, BORDER()));
                 let rects = [
                     Rect::from_min_max(r.min, pos2(mid - 0.5, r.max.y)),
                     Rect::from_min_max(pos2(mid + 0.5, r.min.y), r.max),
@@ -2015,21 +2050,21 @@ impl QuokkaApp {
                         let icons = self.settings.associated_icons.then_some(&mut self.file_icons);
                         if let Some(q) = &mut self.quick_view {
                             #[allow(deprecated)]
-                            ui.allocate_ui_at_rect(pr, |ui| q.ui(ui, pr, panel, icons));
+                            ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(pr), |ui| q.ui(ui, pr, panel, icons));
                         }
                         continue;
                     }
                     let active = self.active == i;
                     self.pane_rects[i] = Some(pr);
                     #[allow(deprecated)]
-                    let out = ui.allocate_ui_at_rect(pr, |ui| pane_ui(ui, &mut self.sides[i], active, i, &mut self.settings.col_widths[i], &mut self.settings.columns[i], self.settings.associated_icons.then_some(&mut self.file_icons))).inner;
+                    let out = ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(pr), |ui| pane_ui(ui, &mut self.sides[i], active, i, &mut self.settings.col_widths[i], &mut self.settings.columns[i], self.settings.associated_icons.then_some(&mut self.file_icons))).inner;
                     outs.push((i, out));
                 }
             } else {
                 let i = self.active;
                 self.pane_rects[i] = Some(r);
                 #[allow(deprecated)]
-                let out = ui.allocate_ui_at_rect(r, |ui| pane_ui(ui, &mut self.sides[i], true, i, &mut self.settings.col_widths[i], &mut self.settings.columns[i], self.settings.associated_icons.then_some(&mut self.file_icons))).inner;
+                let out = ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(r), |ui| pane_ui(ui, &mut self.sides[i], true, i, &mut self.settings.col_widths[i], &mut self.settings.columns[i], self.settings.associated_icons.then_some(&mut self.file_icons))).inner;
                 outs.push((i, out));
             }
             for (i, out) in &mut outs {
@@ -2069,7 +2104,7 @@ impl QuokkaApp {
                 if ctx.input_mut(|i| hotkeys::take_command(&mut i.events, "toggle_regex")) {
                     regex = !regex;
                 }
-                dialog(ctx, "filter", 540.0_f32.min(ctx.screen_rect().width() - 64.0), |ui| {
+                dialog(ctx, "filter", 540.0_f32.min(ctx.content_rect().width() - 64.0), |ui| {
                     dialog_header(ui, Glyph::Search, BLUE, tr!("Поиск по имени", "Search by name"), Some(tr!("В текущей папке · Ctrl+F", "In the current folder · Ctrl+F")));
                     let id = self.search_id;
                     let p = self.ap();
@@ -2094,14 +2129,14 @@ impl QuokkaApp {
                     if let Some(error) = &p.filter_error {
                         ui.label(RichText::new(error).color(RED).size(13.0));
                     } else {
-                        ui.label(RichText::new(tr!("Фильтр применяется сразу. Очистите поле, чтобы показать все файлы.", "The filter applies immediately. Clear the field to show all files.")).color(MUTED).size(13.0));
+                        ui.label(RichText::new(tr!("Фильтр применяется сразу. Очистите поле, чтобы показать все файлы.", "The filter applies immediately. Clear the field to show all files.")).color(MUTED()).size(13.0));
                     }
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
                         if btn(ui, tr!("Готово", "Done"), BLUE, Color32::WHITE).clicked() || enter {
                             close = true;
                         }
-                        if btn(ui, tr!("Сбросить", "Clear"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Сбросить", "Clear"), INPUT_BG(), TEXT()).clicked() {
                             p.filter.clear();
                             p.apply_filter();
                             *first = true;
@@ -2119,7 +2154,7 @@ impl QuokkaApp {
             Modal::Help => {
                 let mut close = esc || ctx.input_mut(|i| hotkeys::take_command(&mut i.events, "help"));
                 let mut edit_keys = false;
-                let screen = ctx.screen_rect();
+                let screen = ctx.content_rect();
                 // header, mouse hint and button take about 230 px of the dialog
                 let list_h = (screen.height() - 290.0).max(120.0);
                 let width = 640.0_f32.min(screen.width() - 80.0).max(280.0);
@@ -2152,25 +2187,25 @@ impl QuokkaApp {
                             }).collect();
                             for (k1, d1, k2, d2) in rows {
                                 kbd(ui, k1);
-                                ui.label(RichText::new(d1).color(TEXT));
+                                ui.label(RichText::new(d1).color(TEXT()));
                                 if k2.is_empty() {
                                     ui.label("");
                                 } else {
                                     kbd(ui, k2);
                                 }
-                                ui.label(RichText::new(d2).color(TEXT));
+                                ui.label(RichText::new(d2).color(TEXT()));
                                 ui.end_row();
                             }
                         });
                     });
                     ui.add_space(6.0);
-                    ui.label(RichText::new(tr!("Мышь: Ctrl+клик / Shift+клик — отметить, протянуть рамку с пустого места или со строки — выделить несколько, щелчок по пустому месту — снять выделение, двойной клик — открыть, правый клик — меню.", "Mouse: Ctrl+click / Shift+click — mark, drag a frame from an empty spot or from a row — select several, click on an empty spot — clear selection, double-click — open, right-click — menu.")).size(12.5).color(MUTED));
+                    ui.label(RichText::new(tr!("Мышь: Ctrl+клик / Shift+клик — отметить, протянуть рамку с пустого места или со строки — выделить несколько, щелчок по пустому месту — снять выделение, двойной клик — открыть, правый клик — меню.", "Mouse: Ctrl+click / Shift+click — mark, drag a frame from an empty spot or from a row — select several, click on an empty spot — clear selection, double-click — open, right-click — menu.")).size(12.5).color(MUTED()));
                     ui.add_space(10.0);
                     buttons_row(ui, |ui| {
                         if btn(ui, tr!("Закрыть", "Close"), BLUE, Color32::WHITE).clicked() {
                             close = true;
                         }
-                        if btn(ui, tr!("Изменить сочетания…", "Change shortcuts…"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Изменить сочетания…", "Change shortcuts…"), INPUT_BG(), TEXT()).clicked() {
                             edit_keys = true;
                         }
                     });
@@ -2195,7 +2230,7 @@ impl QuokkaApp {
             Modal::About => self.about_ui(ctx, esc || enter),
             Modal::Settings { group, filter } => {
                 let mut close = esc;
-                let hk_id = Id::new("hotkeys-edit");
+                let hk_id = Id::unique("hotkeys-edit");
                 let mut hk: hotkeys::EditState = ctx.data(|d| d.get_temp(hk_id)).unwrap_or_default();
                 if hk.capturing() {
                     // the recorded keys must not reach text fields or close the dialog
@@ -2217,7 +2252,7 @@ impl QuokkaApp {
                 let mut edit_columns = None;
                 let mut check_now = false;
                 let looks: Vec<Look> = self.settings.places.clone().iter().map(|pl| place_look(&mut self.icon_cache, ctx, pl)).collect();
-                let screen = ctx.screen_rect();
+                let screen = ctx.content_rect();
                 let width = 920.0_f32.min(screen.width() - 60.0);
                 let body_h = (screen.height() - 160.0).clamp(340.0, 600.0);
                 let q = filter.trim().to_lowercase();
@@ -2225,22 +2260,22 @@ impl QuokkaApp {
                 if !visible.is_empty() && !visible.contains(group) {
                     *group = visible[0];
                 }
-                let sel_id = Id::new("settings-place-sel");
+                let sel_id = Id::unique("settings-place-sel");
                 let mut place_sel: usize = ctx.data(|d| d.get_temp(sel_id)).unwrap_or(0);
                 flat_dialog(ctx, "settings", width, |ui| {
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                     let (body, _) = ui.allocate_exact_size(vec2(width, body_h), Sense::hover());
                     let side = Rect::from_min_size(body.min, vec2(SETTINGS_NAV_W, body_h));
                     let content = Rect::from_min_max(pos2(side.right() + 1.0, body.top()), body.max);
-                    ui.painter().rect_filled(side, Rounding { nw: FLAT_R, ..Default::default() }, NAV_BG);
-                    ui.painter().vline(side.right(), side.y_range(), Stroke::new(1.0, BORDER));
+                    ui.painter().rect_filled(side, CornerRadius { nw: rad_u8(FLAT_R as u8), ..Default::default() }, NAV_BG());
+                    ui.painter().vline(side.right(), side.y_range(), Stroke::new(1.0, BORDER()));
 
                     // tree with its search box
                     place(ui, egui::UiBuilder::new().max_rect(side.shrink2(vec2(14.0, 18.0))), |ui| {
                         ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
                         let has_text = !filter.is_empty();
                         let mut clear = false;
-                        jb_field(ui, Id::new("settings-filter"), filter, tr!("Поиск настроек", "Search settings"), Glyph::Search, regular(13.5), &[], |ui| {
+                        jb_field(ui, Id::unique("settings-filter"), filter, tr!("Поиск настроек", "Search settings"), Glyph::Search, regular(13.5), &[], |ui| {
                             clear = has_text && jb_tool(ui, Glyph::Close, true, tr!("Очистить", "Clear")).clicked();
                         });
                         if clear {
@@ -2250,7 +2285,7 @@ impl QuokkaApp {
                         settings_nav(ui, group, &visible);
                         if visible.is_empty() {
                             ui.add_space(8.0);
-                            ui.label(RichText::new(tr!("Ничего не найдено", "Nothing found")).size(13.0).color(MUTED));
+                            ui.label(RichText::new(tr!("Ничего не найдено", "Nothing found")).size(13.0).color(MUTED()));
                         }
                     });
 
@@ -2259,9 +2294,9 @@ impl QuokkaApp {
                         let name = SettingsGroup::all().iter().find(|t| t.0 == *group).map_or("", |t| t.1);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
-                            ui.label(RichText::new(tr!("Настройки", "Settings")).size(13.5).color(MUTED));
-                            ui.label(RichText::new("›").size(14.0).color(MUTED));
-                            ui.label(RichText::new(name).font(semibold(14.0)).color(TEXT));
+                            ui.label(RichText::new(tr!("Настройки", "Settings")).size(13.5).color(MUTED()));
+                            ui.label(RichText::new("›").size(14.0).color(MUTED()));
+                            ui.label(RichText::new(name).font(semibold(14.0)).color(TEXT()));
                         });
                         ui.add_space(8.0);
                         if visible.is_empty() {
@@ -2278,7 +2313,7 @@ impl QuokkaApp {
                                     SettingsGroup::View => {
                                         jb_group(ui, tr!("Язык интерфейса", "Interface language"));
                                         ui.horizontal(|ui| {
-                                            ui.label(RichText::new(tr!("Язык:", "Language:")).size(13.5).color(TEXT));
+                                            ui.label(RichText::new(tr!("Язык:", "Language:")).size(13.5).color(TEXT()));
                                             ui.add_space(8.0);
                                             egui::ComboBox::from_id_salt("settings-language")
                                                 .selected_text(st.language.native_name())
@@ -2320,8 +2355,8 @@ impl QuokkaApp {
                                         ui.add_space(10.0);
                                         jb_group(ui, tr!("Внешний редактор", "External editor"));
                                         ui.horizontal(|ui| {
-                                            ui.label(RichText::new(tr!("Команда (F4):", "Command (F4):")).size(13.5).color(TEXT));
-                                            jb_field(ui, Id::new("settings-editor"), &mut st.editor, &fsops::default_editor_hint(), Glyph::Code, mono(13.0), &[], |_| {});
+                                            ui.label(RichText::new(tr!("Команда (F4):", "Command (F4):")).size(13.5).color(TEXT()));
+                                            jb_field(ui, Id::unique("settings-editor"), &mut st.editor, &fsops::default_editor_hint(), Glyph::Code, mono(13.0), &[], |_| {});
                                         });
                                         jb_comment(
                                             ui,
@@ -2329,6 +2364,7 @@ impl QuokkaApp {
                                             tr!("Программа или команда; %f заменяется путём к файлу, иначе путь добавляется в конец. Пусто — редактор по умолчанию. Встроенный редактор — Shift+F4.", "Program or command; %f is replaced with the file path, otherwise the path is appended. Empty — default editor. Built-in editor — Shift+F4."),
                                         );
                                     }
+                                    SettingsGroup::Appearance => appearance_page(ui, &mut st.appearance),
                                     SettingsGroup::Search => {
                                         jb_group(ui, tr!("Фильтр по имени (Ctrl+F)", "Filter by name (Ctrl+F)"));
                                         jb_option(
@@ -2350,7 +2386,7 @@ impl QuokkaApp {
                                         jb_group(ui, tr!("Избранное", "Favorites"));
                                         let n = st.places.len();
                                         place_sel = place_sel.min(n.saturating_sub(1));
-                                        egui::Frame::none().stroke(Stroke::new(1.0, FIELD_BORDER)).rounding(5.0).show(ui, |ui| {
+                                        egui::Frame::NONE.stroke(Stroke::new(1.0, FIELD_BORDER())).corner_radius(rad(5.0)).show(ui, |ui| {
                                             ui.set_width(ui.available_width());
                                             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                                             ui.horizontal(|ui| {
@@ -2376,20 +2412,20 @@ impl QuokkaApp {
                                                 }
                                             });
                                             let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-                                            ui.painter().rect_filled(line, 0.0, BORDER);
+                                            ui.painter().rect_filled(line, 0.0, BORDER());
                                             for (i, pl) in st.places.iter().enumerate() {
                                                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
                                                 let p = ui.painter();
                                                 if i == place_sel {
-                                                    p.rect_filled(r.shrink(2.0), 4.0, NAV_SEL);
+                                                    p.rect_filled(r.shrink(2.0), rad(4.0), NAV_SEL());
                                                 } else if resp.hovered() {
-                                                    p.rect_filled(r.shrink(2.0), 4.0, HOVER);
+                                                    p.rect_filled(r.shrink(2.0), rad(4.0), HOVER());
                                                 }
-                                                draw_look(p, Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(18.0, 18.0)), looks[i], SLATE);
+                                                draw_look(p, Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(18.0, 18.0)), looks[i], SLATE());
                                                 let pc = p.with_clip_rect(r.shrink2(vec2(8.0, 0.0)));
-                                                let end = pc.text(pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, &pl.name, regular(13.5), TEXT).right();
+                                                let end = pc.text(pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, &pl.name, regular(13.5), TEXT()).right();
                                                 let path = if pl.path.as_os_str().is_empty() { tr!("Этот компьютер", "This PC").to_string() } else { pl.path.display().to_string() };
-                                                pc.text(pos2(end + 12.0, r.center().y), Align2::LEFT_CENTER, &path, regular(12.5), MUTED);
+                                                pc.text(pos2(end + 12.0, r.center().y), Align2::LEFT_CENTER, &path, regular(12.5), MUTED());
                                                 let resp = resp.on_hover_text(&path);
                                                 if resp.clicked() {
                                                     place_sel = i;
@@ -2412,11 +2448,11 @@ impl QuokkaApp {
 
                     // footer
                     let (foot, _) = ui.allocate_exact_size(vec2(width, 62.0), Sense::hover());
-                    ui.painter().hline(foot.x_range(), foot.top(), Stroke::new(1.0, BORDER));
+                    ui.painter().hline(foot.x_range(), foot.top(), Stroke::new(1.0, BORDER()));
                     place(ui, egui::UiBuilder::new().max_rect(foot.shrink2(vec2(28.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
-                        icons::glyph(ui.painter(), Rect::from_center_size(pos2(ui.cursor().left() + 9.0, foot.center().y), vec2(16.0, 16.0)), Glyph::Question, MUTED);
+                        icons::glyph(ui.painter(), Rect::from_center_size(pos2(ui.cursor().left() + 9.0, foot.center().y), vec2(16.0, 16.0)), Glyph::Question, MUTED());
                         ui.add_space(26.0);
-                        ui.label(RichText::new(tr!("Изменения применяются и сохраняются сразу", "Changes are applied and saved immediately")).size(12.5).color(MUTED));
+                        ui.label(RichText::new(tr!("Изменения применяются и сохраняются сразу", "Changes are applied and saved immediately")).size(12.5).color(MUTED()));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if jb_btn(ui, tr!("Готово", "Done"), true).clicked() {
                                 close = true;
@@ -2434,6 +2470,12 @@ impl QuokkaApp {
                 }
                 if reset {
                     self.settings.places = config::default_places();
+                }
+                if self.settings.appearance.font != before.appearance.font {
+                    theme::apply(ctx, &self.settings.appearance);
+                } else if self.settings.appearance != before.appearance {
+                    // fonts are reloaded only when the font itself changes
+                    theme::apply_style(ctx, &self.settings.appearance);
                 }
                 if self.settings.language != before.language {
                     quokka_domain::lang::set(self.settings.language);
@@ -2477,23 +2519,23 @@ impl QuokkaApp {
                     };
                     ui.horizontal(|ui| {
                         let (r, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
-                        ui.painter().rect_filled(r, 14.0, INPUT_BG);
-                        draw_look(ui.painter(), r.shrink(12.0), preview, SLATE);
+                        ui.painter().rect_filled(r, rad(14.0), INPUT_BG());
+                        draw_look(ui.painter(), r.shrink(12.0), preview, SLATE());
                         ui.add_space(6.0);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.label(RichText::new(title).font(semibold(18.0)).color(TEXT));
+                            ui.label(RichText::new(title).font(semibold(18.0)).color(TEXT()));
                             let what = match ed.icon.as_deref() {
                                 Some(spec) => iconsrc::describe(spec),
                                 None => tr!("Стандартный значок", "Default icon").into(),
                             };
-                            ui.label(RichText::new(what).size(13.0).color(MUTED));
+                            ui.label(RichText::new(what).size(13.0).color(MUTED()));
                         });
                     });
                     ui.add_space(12.0);
 
                     ui.columns(2, |cols| {
-                        cols[0].label(RichText::new(tr!("Название", "Name")).color(TEXT_SOFT).size(13.0));
+                        cols[0].label(RichText::new(tr!("Название", "Name")).color(TEXT_SOFT()).size(13.0));
                         let r = cols[0].add(egui::TextEdit::singleline(&mut ed.name).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)).font(regular(15.0)));
                         if ed.first {
                             ed.first = false;
@@ -2502,7 +2544,7 @@ impl QuokkaApp {
                         if r.lost_focus() && enter {
                             submit = true;
                         }
-                        cols[1].label(RichText::new(tr!("Папка (пусто — «Этот компьютер»)", "Folder (empty — “This PC”)")).color(TEXT_SOFT).size(13.0));
+                        cols[1].label(RichText::new(tr!("Папка (пусто — «Этот компьютер»)", "Folder (empty — “This PC”)")).color(TEXT_SOFT()).size(13.0));
                         let r = cols[1].add(egui::TextEdit::singleline(&mut ed.path).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)).font(regular(14.0)));
                         if r.lost_focus() && enter {
                             submit = true;
@@ -2524,7 +2566,7 @@ impl QuokkaApp {
                         }
                     });
                     ui.add_space(8.0);
-                    egui::Frame::none().fill(INPUT_BG).rounding(12.0).inner_margin(Margin::same(12.0)).show(ui, |ui| {
+                    egui::Frame::NONE.fill(INPUT_BG()).corner_radius(rad(12.0)).inner_margin(Margin::same(12)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.set_min_height(250.0);
                         match ed.tab {
@@ -2534,7 +2576,7 @@ impl QuokkaApp {
                                     ed.icon = None;
                                 }
                                 ui.add_space(10.0);
-                                ui.label(RichText::new(tr!("Цвет значка", "Icon color")).color(TEXT_SOFT).size(13.0));
+                                ui.label(RichText::new(tr!("Цвет значка", "Icon color")).color(TEXT_SOFT()).size(13.0));
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
                                     for (c, name) in icon_colors() {
@@ -2546,12 +2588,14 @@ impl QuokkaApp {
                                                 p.circle_filled(r.center(), 11.0, Color32::from_rgb(cr, cg, cb));
                                             }
                                             None => {
-                                                p.circle_stroke(r.center(), 10.5, Stroke::new(1.5, SLATE));
-                                                p.line_segment([r.center() + vec2(-7.0, 7.0), r.center() + vec2(7.0, -7.0)], Stroke::new(1.5, SLATE));
+                                                p.circle_stroke(r.center(), 10.5, Stroke::new(1.5, SLATE()));
+                                                p.line_segment([r.center() + vec2(-7.0, 7.0), r.center() + vec2(7.0, -7.0)], Stroke::new(1.5, SLATE()));
                                             }
                                         }
                                         if on {
                                             p.circle_stroke(r.center(), 13.5, Stroke::new(2.0, BLUE));
+                                        } else if resp.hovered() {
+                                            p.circle_stroke(r.center(), 13.5, Stroke::new(1.5, BORDER()));
                                         }
                                         if resp.on_hover_text(name).clicked() {
                                             ed.color = c;
@@ -2600,13 +2644,13 @@ impl QuokkaApp {
                                             }
                                         }
                                     }
-                                    ui.label(RichText::new(tr!("ico, png, jpg, svg, bmp, gif, webp, а также exe и dll", "ico, png, jpg, svg, bmp, gif, webp, as well as exe and dll")).size(12.5).color(MUTED));
+                                    ui.label(RichText::new(tr!("ico, png, jpg, svg, bmp, gif, webp, а также exe и dll", "ico, png, jpg, svg, bmp, gif, webp, as well as exe and dll")).size(12.5).color(MUTED()));
                                 });
                                 ui.add_space(8.0);
                                 let own_lib = iconsrc::is_resource_file(&ed.lib)
                                     && !ed.lib.starts_with(std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_default());
                                 if own_lib {
-                                    ui.label(RichText::new(trf!("Значки из {}", "Icons from {}", ed.lib.display())).size(12.5).color(TEXT_SOFT));
+                                    ui.label(RichText::new(trf!("Значки из {}", "Icons from {}", ed.lib.display())).size(12.5).color(TEXT_SOFT()));
                                     resource_grid(ui, cache, ctx, ed);
                                 } else if let Some(spec) = ed.icon.clone().filter(|s| s != iconsrc::SHELL) {
                                     ui.horizontal(|ui| {
@@ -2619,10 +2663,10 @@ impl QuokkaApp {
                                                 ui.painter().text(r.center(), Align2::CENTER_CENTER, "?", semibold(28.0), RED);
                                             }
                                         }
-                                        ui.label(RichText::new(spec.as_str()).size(12.5).color(TEXT_SOFT));
+                                        ui.label(RichText::new(spec.as_str()).size(12.5).color(TEXT_SOFT()));
                                     });
                                 } else {
-                                    ui.label(RichText::new(tr!("Файл не выбран", "No file selected")).color(MUTED));
+                                    ui.label(RichText::new(tr!("Файл не выбран", "No file selected")).color(MUTED()));
                                 }
                             }
                         }
@@ -2636,7 +2680,7 @@ impl QuokkaApp {
                         if btn(ui, tr!("Сохранить", "Save"), BLUE, Color32::WHITE).clicked() {
                             submit = true;
                         }
-                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                             cancel = true;
                         }
                     });
@@ -2717,7 +2761,7 @@ impl QuokkaApp {
                         if btn(ui, tr!("ОК", "OK"), BLUE, Color32::WHITE).clicked() {
                             submit = true;
                         }
-                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                             cancel = true;
                         }
                     });
@@ -2761,7 +2805,7 @@ impl QuokkaApp {
                         if btn(ui, title, color, Color32::WHITE).clicked() {
                             submit = true;
                         }
-                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                             cancel = true;
                         }
                     });
@@ -2810,10 +2854,10 @@ impl QuokkaApp {
                     dialog_header(ui, Glyph::Trash, RED, title, Some(&sub));
                     for s in sources.iter().take(6) {
                         let name = s.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        ui.label(RichText::new(format!("•  {name}")).color(TEXT));
+                        ui.label(RichText::new(format!("•  {name}")).color(TEXT()));
                     }
                     if sources.len() > 6 {
-                        ui.label(RichText::new(trf!("…и ещё {}", "…and {} more", sources.len() - 6)).color(MUTED));
+                        ui.label(RichText::new(trf!("…и ещё {}", "…and {} more", sources.len() - 6)).color(MUTED()));
                     }
                     ui.add_space(6.0);
                     let note = if permanent {
@@ -2821,13 +2865,13 @@ impl QuokkaApp {
                     } else {
                         tr!("Файлы можно будет восстановить из корзины. Shift+Del — удалить навсегда.", "Files can be restored from the Recycle Bin. Shift+Del — delete permanently.")
                     };
-                    ui.label(RichText::new(note).color(MUTED).size(13.0));
+                    ui.label(RichText::new(note).color(MUTED()).size(13.0));
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
                         if btn(ui, if permanent { tr!("Удалить", "Delete") } else { tr!("В корзину", "To Recycle Bin") }, RED, Color32::WHITE).clicked() {
                             submit = true;
                         }
-                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                             cancel = true;
                         }
                     });
@@ -2847,12 +2891,12 @@ impl QuokkaApp {
                 let mut save = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S) || i.consume_key(Modifiers::NONE, Key::F2));
                 let mut close = esc || ctx.input(|i| i.key_pressed(Key::F10));
                 let mut discard = false;
-                let screen = ctx.screen_rect();
+                let screen = ctx.content_rect();
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let sub = if dirty { tr!("Изменён — Ctrl+S, чтобы сохранить", "Modified — Ctrl+S to save").to_string() } else { remote::shown(path) };
                 dialog(ctx, "editor", (screen.width() * 0.8).min(1200.0), |ui| {
                     dialog_header(ui, Glyph::Pencil, if dirty { ORANGE } else { BLUE }, &name, Some(&sub));
-                    egui::Frame::none().fill(INPUT_BG).rounding(10.0).inner_margin(Margin::same(10.0)).show(ui, |ui| {
+                    egui::Frame::NONE.fill(INPUT_BG()).corner_radius(rad(10.0)).inner_margin(Margin::same(10)).show(ui, |ui| {
                         egui::ScrollArea::both().max_height(screen.height() * 0.6).auto_shrink([false, false]).show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::multiline(text)
@@ -2860,7 +2904,7 @@ impl QuokkaApp {
                                     .font(mono(13.0))
                                     .desired_width(f32::INFINITY)
                                     .desired_rows(28)
-                                    .frame(false),
+                                    .frame(egui::Frame::NONE),
                             );
                         });
                     });
@@ -2875,12 +2919,12 @@ impl QuokkaApp {
                                 discard = true;
                                 *original = text.clone();
                             }
-                            if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                            if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                                 *confirm_close = false;
                             }
                             ui.label(RichText::new(tr!("Есть несохранённые изменения", "There are unsaved changes")).color(ORANGE));
                         } else {
-                            if btn(ui, tr!("Закрыть", "Close"), INPUT_BG, TEXT).clicked() {
+                            if btn(ui, tr!("Закрыть", "Close"), INPUT_BG(), TEXT()).clicked() {
                                 close = true;
                             }
                             if btn(ui, tr!("Сохранить", "Save"), BLUE, Color32::WHITE).clicked() {
@@ -2944,7 +2988,7 @@ impl QuokkaApp {
                         if btn(ui, tr!("Распаковать", "Extract"), ORANGE, Color32::WHITE).clicked() {
                             submit = true;
                         }
-                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
                             cancel = true;
                         }
                     });
@@ -2975,13 +3019,13 @@ impl QuokkaApp {
                 let n = self.queue.pending_count() + usize::from(self.queue.running().is_some());
                 dialog(ctx, "quit", 440.0, |ui| {
                     dialog_header(ui, Glyph::Question, ORANGE, tr!("Операции ещё выполняются", "Operations are still running"), Some(&trf!("Незавершённых операций: {n}", "Unfinished operations: {n}")));
-                    ui.label(RichText::new(tr!("Если выйти сейчас, текущая операция будет прервана, а ожидающие — отменены.", "If you exit now, the current operation will be aborted and pending ones cancelled.")).color(TEXT));
+                    ui.label(RichText::new(tr!("Если выйти сейчас, текущая операция будет прервана, а ожидающие — отменены.", "If you exit now, the current operation will be aborted and pending ones cancelled.")).color(TEXT()));
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
                         if btn(ui, tr!("Прервать и выйти", "Abort and exit"), RED, Color32::WHITE).clicked() {
                             quit = true;
                         }
-                        if btn(ui, tr!("Остаться", "Stay"), INPUT_BG, TEXT).clicked() {
+                        if btn(ui, tr!("Остаться", "Stay"), INPUT_BG(), TEXT()).clicked() {
                             stay = true;
                         }
                     });
@@ -3003,7 +3047,7 @@ impl QuokkaApp {
                 let mut close = esc || enter;
                 dialog(ctx, "message", 420.0, |ui| {
                     dialog_header(ui, Glyph::Question, ORANGE, title, None);
-                    ui.label(RichText::new(text.as_str()).color(TEXT));
+                    ui.label(RichText::new(text.as_str()).color(TEXT()));
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
                         if btn(ui, tr!("ОК", "OK"), BLUE, Color32::WHITE).clicked() {
@@ -3039,16 +3083,16 @@ impl QuokkaApp {
         let mut ops = Vec::new();
         let open = self.queue_open;
         let queue = &self.queue;
-        egui::Area::new(Id::new("queue"))
+        egui::Area::new(Id::unique("queue"))
             .order(egui::Order::Middle)
             .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -66.0))
             .show(ctx, |ui| {
-                egui::Frame::none()
-                    .fill(CARD)
-                    .rounding(14.0)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .shadow(ctx.style().visuals.popup_shadow)
-                    .inner_margin(Margin::same(14.0))
+                egui::Frame::NONE
+                    .fill(CARD())
+                    .corner_radius(rad(14.0))
+                    .stroke(Stroke::new(1.0, BORDER()))
+                    .shadow(ctx.global_style().visuals.popup_shadow)
+                    .inner_margin(Margin::same(14))
                     .show(ui, |ui| {
                         ui.set_width(420.0);
                         if open {
@@ -3092,24 +3136,25 @@ impl QuokkaApp {
         let fade_out = ((life as f32 - age) / 0.35).clamp(0.0, 1.0);
         let opacity = fade_in * ease_out_cubic(fade_out);
         let rise = 18.0 * (1.0 - ease_out_back((age / 0.35).min(1.0)));
-        egui::Area::new(Id::new("toast"))
+        egui::Area::new(Id::unique("toast"))
             .order(egui::Order::Tooltip)
             .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -70.0 + rise))
             .interactable(t.button.is_some())
             .fade_in(false)
             .show(ctx, |ui| {
                 ui.multiply_opacity(opacity);
-                egui::Frame::none()
-                    .fill(if t.error { RED } else { TEXT })
-                    .rounding(10.0)
-                    .inner_margin(Margin::symmetric(16.0, 10.0))
-                    .shadow(ctx.style().visuals.popup_shadow)
+                egui::Frame::NONE
+                    .fill(if t.error { RED } else { TOAST_BG() })
+                    .stroke(if t.error { Stroke::NONE } else { Stroke::new(1.0, TOAST_BORDER()) })
+                    .corner_radius(rad(10.0))
+                    .inner_margin(Margin::symmetric(16, 10))
+                    .shadow(ctx.global_style().visuals.popup_shadow)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(t.text.as_str()).color(Color32::WHITE).size(14.0));
+                            ui.label(RichText::new(t.text.as_str()).color(if t.error { Color32::WHITE } else { TOAST_FG() }).size(14.0));
                             if let Some((label, action)) = &t.button {
                                 ui.add_space(10.0);
-                                let b = sized_btn(ui, label, Color32::from_white_alpha(28), BLUE_SOFT, Stroke::NONE);
+                                let b = sized_btn(ui, label, Color32::from_white_alpha(if t.error { 40 } else { 26 }), if t.error { Color32::WHITE } else { TOAST_FG() }, Stroke::new(1.0, Color32::from_white_alpha(60)));
                                 let b = if *action == Action::UndoDelete { b.on_hover_text(tr!("Отменить (Ctrl+Z)", "Undo (Ctrl+Z)")) } else { b };
                                 if b.clicked() {
                                     pressed = Some(action.clone());
@@ -3154,7 +3199,8 @@ impl eframe::App for QuokkaApp {
         }
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         begin_row_clicks(ctx);
         if self.hwnd == 0 {
             self.hwnd = crate::dnd::window_handle(frame);
@@ -3208,10 +3254,10 @@ impl eframe::App for QuokkaApp {
                 self.run(a, ctx);
             }
         }
-        self.menu_bar(ctx);
-        self.fkey_bar(ctx);
-        self.sidebar(ctx);
-        self.central(ctx);
+        self.menu_bar(ui);
+        self.fkey_bar(ui);
+        self.sidebar(ui);
+        self.central(ui);
         self.drag_and_drop(ctx);
         self.modal_ui(ctx);
         self.queue_ui(ctx);
@@ -3316,7 +3362,7 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
     const MAX_W: f32 = 200.0;
     const TOP: f32 = 5.0;
     let p = ui.painter().clone();
-    p.line_segment([pos2(rect.left(), rect.bottom() - 0.5), pos2(rect.right(), rect.bottom() - 0.5)], Stroke::new(1.0, BORDER));
+    p.line_segment([pos2(rect.left(), rect.bottom() - 0.5), pos2(rect.right(), rect.bottom() - 0.5)], Stroke::new(1.0, BORDER()));
     let n = side.tabs.len();
     let cy = rect.top() + TOP + (rect.height() - TOP) / 2.0;
 
@@ -3332,7 +3378,7 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
     let max_scroll = (content_w - strip.width()).max(0.0);
 
     // mouse wheel over the strip scrolls it (vertical wheel works too)
-    let strip_resp = ui.interact(strip, Id::new(("tab-strip", idx)), Sense::hover());
+    let strip_resp = ui.interact(strip, Id::unique(("tab-strip", idx)), Sense::hover());
     if overflow && strip_resp.hovered() {
         let d = ui.input(|i| i.smooth_scroll_delta);
         let delta = if d.x.abs() > d.y.abs() { d.x } else { d.y };
@@ -3350,7 +3396,7 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
     side.tab_scroll = side.tab_scroll.clamp(0.0, max_scroll);
 
     let pc = p.with_clip_rect(strip);
-    let (mut select, mut close) = (None, None);
+    let (mut select, mut close, mut duplicate) = (None, None, None);
     let mut x = strip.left() - side.tab_scroll;
     for i in 0..n {
         let tr = Rect::from_min_max(pos2(x, rect.top() + TOP), pos2(x + tab_w, rect.bottom()));
@@ -3359,20 +3405,20 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
         if vis.width() <= 0.0 {
             continue;
         }
-        let resp = ui.interact(vis, Id::new(("tab", idx, i)), Sense::click());
+        let resp = ui.interact(vis, Id::unique(("tab", idx, i)), Sense::click());
         let is_cur = i == side.cur;
         let fill = if is_cur {
             if active {
-                TAB_ACTIVE
+                TAB_ACTIVE()
             } else {
-                SEL_INACTIVE
+                SEL_INACTIVE()
             }
         } else if resp.hovered() {
-            HOVER
+            HOVER()
         } else {
             Color32::TRANSPARENT
         };
-        pc.rect_filled(tr, Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 }, fill);
+        pc.rect_filled(tr, CornerRadius { nw: rad_u8(7), ne: rad_u8(7), sw: 0, se: 0 }, fill);
         icons::folder(&pc, Rect::from_center_size(pos2(tr.left() + 16.0, tr.center().y), vec2(16.0, 14.0)));
         let text_clip = Rect::from_min_max(tr.min, pos2(tr.right() - if n > 1 { 26.0 } else { 6.0 }, tr.bottom())).intersect(strip);
         p.with_clip_rect(text_clip).text(
@@ -3380,17 +3426,17 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
             Align2::LEFT_CENTER,
             side.tabs[i].title(),
             if is_cur { semibold(13.0) } else { regular(13.0) },
-            if is_cur { TEXT } else { TEXT_SOFT },
+            if is_cur { TEXT() } else { TEXT_SOFT() },
         );
         let resp = resp.on_hover_text(remote::shown(&side.tabs[i].path));
         if n > 1 {
             let cr = Rect::from_center_size(pos2(tr.right() - 14.0, tr.center().y), vec2(18.0, 18.0));
             if strip.contains_rect(cr) {
-                let cresp = ui.interact(cr, Id::new(("tab-x", idx, i)), Sense::click());
+                let cresp = ui.interact(cr, Id::unique(("tab-x", idx, i)), Sense::click());
                 if cresp.hovered() {
-                    pc.rect_filled(cr, 5.0, Color32::from_black_alpha(14));
+                    pc.rect_filled(cr, rad(5.0), Color32::from_black_alpha(14));
                 }
-                icons::glyph(&pc, cr.shrink(4.0), Glyph::Close, TEXT_SOFT);
+                icons::glyph(&pc, cr.shrink(4.0), Glyph::Close, TEXT_SOFT());
                 if cresp.clicked() {
                     close = Some(i);
                 }
@@ -3402,6 +3448,38 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
         if resp.middle_clicked() {
             close = Some(i);
         }
+        let path = side.tabs[i].path.clone();
+        resp.context_menu(|ui| {
+            menu_style(ui, 260.0);
+            menu_title(ui, &side.tabs[i].title());
+            let other = if idx == 0 { tr!("Открыть в правой панели", "Open in right pane") } else { tr!("Открыть в левой панели", "Open in left pane") };
+            if menu_item_icon(ui, Some(Glyph::Columns), other, "", true, false).clicked() {
+                out.actions.push(Action::OpenInOtherPane(idx, path.clone()));
+                ui.close();
+            }
+            if menu_item_icon(ui, Some(Glyph::Plus), tr!("Дублировать вкладку", "Duplicate tab"), "", true, false).clicked() {
+                select = Some(i);
+                duplicate = Some(i);
+                ui.close();
+            }
+            if let Some((site, _)) = quokka_domain::remote::split(&path) {
+                menu_sep(ui);
+                let text = if is_device(&path) {
+                    trf!("Отключить {}", "Disconnect {}", site.host)
+                } else {
+                    trf!("Отключиться от {}", "Disconnect from {}", site.host)
+                };
+                if menu_item_icon(ui, Some(Glyph::Unpack), &text, "", true, true).clicked() {
+                    out.actions.push(Action::DisconnectFrom(path.clone()));
+                    ui.close();
+                }
+            }
+            menu_sep(ui);
+            if menu_item_icon(ui, Some(Glyph::Close), tr!("Закрыть вкладку", "Close tab"), "Ctrl+W", n > 1, false).clicked() {
+                close = Some(i);
+                ui.close();
+            }
+        });
     }
 
     // soft fade at clipped edges so it is clear there are more tabs
@@ -3415,7 +3493,7 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
                     pos2(x0 + (x1 - x0) * t, rect.top() + TOP),
                     pos2(x0 + (x1 - x0) * (t + 1.0 / steps as f32), rect.bottom() - 1.0),
                 );
-                p.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(255, 255, 255, (a * 230.0) as u8));
+                p.rect_filled(r, 0.0, CARD().gamma_multiply(a * 0.9));
             }
         };
         if side.tab_scroll > 0.5 {
@@ -3428,11 +3506,11 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
 
     let plus_x = if overflow { rect.right() - 46.0 } else { (x + 14.0).min(rect.right() - 18.0) };
     let pr = Rect::from_center_size(pos2(plus_x, cy), vec2(24.0, 24.0));
-    let presp = ui.interact(pr, Id::new(("tab-plus", idx)), Sense::click());
+    let presp = ui.interact(pr, Id::unique(("tab-plus", idx)), Sense::click());
     if presp.hovered() {
-        p.rect_filled(pr, 6.0, HOVER);
+        p.rect_filled(pr, rad(6.0), HOVER());
     }
-    icons::glyph(&p, pr.shrink(5.0), Glyph::Plus, TEXT_SOFT);
+    icons::glyph(&p, pr.shrink(5.0), Glyph::Plus, TEXT_SOFT());
     if presp.on_hover_text(tr!("Новая вкладка (Ctrl+T)", "New tab (Ctrl+T)")).clicked() {
         out.actions.push(Action::NewTab);
     }
@@ -3440,16 +3518,16 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
     // with many tabs: a drop-down listing all of them
     if overflow {
         let lr = Rect::from_center_size(pos2(rect.right() - 18.0, cy), vec2(24.0, 24.0));
-        let lresp = ui.interact(lr, Id::new(("tab-list", idx)), Sense::click());
+        let lresp = ui.interact(lr, Id::unique(("tab-list", idx)), Sense::click());
         if lresp.hovered() {
-            p.rect_filled(lr, 6.0, HOVER);
+            p.rect_filled(lr, rad(6.0), HOVER());
         }
-        icons::glyph(&p, lr.shrink(6.0), Glyph::ChevronDown, TEXT_SOFT);
-        let popup = Id::new(("tab-list-popup", idx));
+        icons::glyph(&p, lr.shrink(6.0), Glyph::ChevronDown, TEXT_SOFT());
+        let popup = Id::unique(("tab-list-popup", idx));
         if lresp.clone().on_hover_text(trf!("Все вкладки ({n})", "All tabs ({n})")).clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup));
+            egui::Popup::toggle_id(ui.ctx(), popup);
         }
-        egui::popup::popup_below_widget(ui, popup, &lresp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+        egui::Popup::from_response(&lresp).id(popup).open_memory(None).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
             ui.set_min_width(260.0);
             egui::ScrollArea::vertical().max_height(popup_max_height(ui, lresp.rect, 420.0)).show(ui, |ui| {
                 for i in 0..n {
@@ -3464,9 +3542,15 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
     if let Some(i) = select {
         side.cur = i;
     }
+    if let Some(i) = duplicate {
+        let dup = side.tabs[i].duplicate();
+        side.tabs.insert(i + 1, dup);
+        side.cur = i + 1;
+    }
     if let Some(i) = close {
         if side.tabs.len() > 1 {
-            side.tabs.remove(i);
+            let closed = side.tabs.remove(i);
+            out.actions.push(Action::TabClosed(closed.path));
             if side.cur > i || side.cur >= side.tabs.len() {
                 side.cur = side.cur.saturating_sub(1);
             }
@@ -3477,8 +3561,8 @@ fn tab_strip(ui: &mut Ui, side: &mut Side, active: bool, idx: usize, rect: Rect,
 fn tool_btn(ui: &Ui, rect: Rect, id: Id, g: Glyph, enabled: bool) -> Response {
     let resp = ui.interact(rect, id, if enabled { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
-    p.rect(rect, 8.0, if resp.hovered() && enabled { HOVER } else { CARD }, Stroke::new(1.0, BORDER));
-    icons::glyph(p, rect.shrink(8.0), g, if enabled { TEXT_SOFT } else { Color32::from_rgb(200, 206, 216) });
+    p.rect(rect, rad(8.0), if resp.hovered() && enabled { HOVER() } else { CARD() }, Stroke::new(1.0, BORDER()), eframe::egui::StrokeKind::Middle);
+    icons::glyph(p, rect.shrink(8.0), g, if enabled { TEXT_SOFT() } else { DISABLED() });
     resp
 }
 
@@ -3493,29 +3577,29 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
     ];
     for (k, (g, en, a)) in specs.into_iter().enumerate() {
         let r = Rect::from_min_size(pos2(x, cy - b / 2.0), vec2(b, b));
-        if tool_btn(ui, r, Id::new(("tool", idx, k)), g, en).clicked() {
+        if tool_btn(ui, r, Id::unique(("tool", idx, k)), g, en).clicked() {
             out.actions.push(a);
         }
         x += b + 8.0;
     }
     let p = ui.painter().clone();
-    p.line_segment([pos2(x + 2.0, cy - 12.0), pos2(x + 2.0, cy + 12.0)], Stroke::new(1.0, BORDER));
+    p.line_segment([pos2(x + 2.0, cy - 12.0), pos2(x + 2.0, cy + 12.0)], Stroke::new(1.0, BORDER()));
     x += 12.0;
 
     let rr = Rect::from_min_size(pos2(rect.right() - 10.0 - b, cy - b / 2.0), vec2(b, b));
-    if tool_btn(ui, rr, Id::new(("tool", idx, 9)), Glyph::Refresh, true).on_hover_text(tr!("Обновить (Ctrl+R)", "Refresh (Ctrl+R)")).clicked() {
+    if tool_btn(ui, rr, Id::unique(("tool", idx, 9)), Glyph::Refresh, true).on_hover_text(tr!("Обновить (Ctrl+R)", "Refresh (Ctrl+R)")).clicked() {
         out.actions.push(Action::Refresh);
     }
 
     let crumb_r = Rect::from_min_max(pos2(x, cy - 18.0), pos2(rr.left() - 8.0, cy + 18.0));
     let editing = panel.editing_path.is_some();
-    p.rect(crumb_r, 8.0, CARD, Stroke::new(if editing { 1.5 } else { 1.0 }, if editing { BLUE } else { BORDER }));
+    p.rect(crumb_r, rad(8.0), CARD(), Stroke::new(if editing { 1.5 } else { 1.0 }, if editing { BLUE } else { BORDER() }), eframe::egui::StrokeKind::Middle);
 
     if let Some(text) = panel.editing_path.as_mut() {
         let tr = crumb_r.shrink2(vec2(12.0, 6.0));
         let r = ui.put(
             tr,
-            egui::TextEdit::singleline(text).id(path_edit_id(idx)).frame(false).font(regular(14.5)).text_color(TEXT),
+            egui::TextEdit::singleline(text).id(path_edit_id(idx)).frame(egui::Frame::NONE).font(regular(14.5)).text_color(TEXT()),
         );
         if panel.focus_path_edit {
             r.request_focus();
@@ -3533,7 +3617,7 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
     }
 
     // whole box: double-click to type a path
-    let box_resp = ui.interact(crumb_r, Id::new(("crumb-box", idx)), Sense::click());
+    let box_resp = ui.interact(crumb_r, Id::unique(("crumb-box", idx)), Sense::click());
     if box_resp.double_clicked() {
         out.actions.push(Action::EditPath);
     }
@@ -3554,7 +3638,7 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
         }
     }
     let font = regular(14.5);
-    let galleys: Vec<_> = segs.iter().map(|(l, _)| p.layout_no_wrap(l.clone(), font.clone(), TEXT)).collect();
+    let galleys: Vec<_> = segs.iter().map(|(l, _)| p.layout_no_wrap(l.clone(), font.clone(), TEXT())).collect();
     let icon_w = 30.0;
     let chev_w = 20.0;
     let avail = crumb_r.width() - icon_w - 44.0;
@@ -3568,33 +3652,33 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
     let pc = p.with_clip_rect(Rect::from_min_max(clip.min, pos2(crumb_r.right() - 34.0, clip.max.y)));
     let mut sx = crumb_r.left() + icon_w + 8.0;
     if start > 0 {
-        pc.text(pos2(sx, cy), Align2::LEFT_CENTER, "…", font.clone(), MUTED);
+        pc.text(pos2(sx, cy), Align2::LEFT_CENTER, "…", font.clone(), MUTED());
         sx += 24.0;
     }
     let last = segs.len() - 1;
     for (i, ((_, path), g)) in segs.iter().zip(galleys).enumerate().skip(start) {
         let gr = Rect::from_min_size(pos2(sx - 4.0, cy - 13.0), vec2(g.size().x + 8.0, 26.0));
-        let resp = ui.interact(gr, Id::new(("crumb", idx, i)), Sense::click());
+        let resp = ui.interact(gr, Id::unique(("crumb", idx, i)), Sense::click());
         if resp.hovered() {
-            pc.rect_filled(gr, 6.0, HOVER);
+            pc.rect_filled(gr, rad(6.0), HOVER());
         }
-        let color = if i == last { TEXT } else if resp.hovered() { BLUE } else { TEXT_SOFT };
+        let color = if i == last { TEXT() } else if resp.hovered() { BLUE } else { TEXT_SOFT() };
         pc.galley(pos2(sx, cy - g.size().y / 2.0), g.clone(), color);
         if resp.clicked() && i != last {
             out.actions.push(Action::GoTo(path.clone()));
         }
         sx += g.size().x;
         if i != last {
-            icons::glyph(&pc, Rect::from_center_size(pos2(sx + chev_w / 2.0, cy), vec2(12.0, 12.0)), Glyph::ChevronRight, MUTED);
+            icons::glyph(&pc, Rect::from_center_size(pos2(sx + chev_w / 2.0, cy), vec2(12.0, 12.0)), Glyph::ChevronRight, MUTED());
             sx += chev_w;
         }
     }
     let dr = Rect::from_center_size(pos2(crumb_r.right() - 18.0, cy), vec2(24.0, 24.0));
-    let dresp = ui.interact(dr, Id::new(("crumb-edit", idx)), Sense::click());
+    let dresp = ui.interact(dr, Id::unique(("crumb-edit", idx)), Sense::click());
     if dresp.hovered() {
-        p.rect_filled(dr, 6.0, HOVER);
+        p.rect_filled(dr, rad(6.0), HOVER());
     }
-    icons::glyph(&p, dr.shrink(4.0), Glyph::ChevronDown, TEXT_SOFT);
+    icons::glyph(&p, dr.shrink(4.0), Glyph::ChevronDown, TEXT_SOFT());
     if dresp.on_hover_text(tr!("Ввести путь (Ctrl+L)", "Enter path (Ctrl+L)")).clicked() {
         out.actions.push(Action::EditPath);
     }
@@ -3610,16 +3694,16 @@ fn menu_style(ui: &mut Ui, min_width: f32) {
     s.spacing.interact_size.y = MENU_ROW_H;
     let w = &mut s.visuals.widgets;
     for wv in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-        wv.rounding = Rounding::same(4.0);
+        wv.corner_radius = CornerRadius::same(rad_u8(4));
         wv.bg_stroke = Stroke::NONE;
         wv.expansion = 0.0;
     }
-    w.hovered.weak_bg_fill = BLUE_SOFT;
-    w.hovered.bg_fill = BLUE_SOFT;
-    w.active.weak_bg_fill = Color32::from_rgb(218, 232, 255);
-    w.active.bg_fill = Color32::from_rgb(218, 232, 255);
-    w.open.weak_bg_fill = BLUE_SOFT;
-    w.open.bg_fill = BLUE_SOFT;
+    w.hovered.weak_bg_fill = BLUE_SOFT();
+    w.hovered.bg_fill = BLUE_SOFT();
+    w.active.weak_bg_fill = PRESSED();
+    w.active.bg_fill = PRESSED();
+    w.open.weak_bg_fill = BLUE_SOFT();
+    w.open.bg_fill = BLUE_SOFT();
     w.inactive.weak_bg_fill = Color32::TRANSPARENT;
     w.inactive.bg_fill = Color32::TRANSPARENT;
 }
@@ -3629,8 +3713,8 @@ fn menu_style(ui: &mut Ui, min_width: f32) {
 /// The menu is laid out plainly while it fits; the scroll area only appears once the
 /// measured height (remembered from the previous frame) exceeds the window.
 fn menu_scroll<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    let max_h = (ui.ctx().screen_rect().height() - 24.0).max(120.0);
-    let id = ui.id().with("menu-content-h");
+    let max_h = (ui.ctx().content_rect().height() - 24.0).max(120.0);
+    let id = ui.scope_id().with("menu-content-h");
     let prev: Option<f32> = ui.data(|d| d.get_temp(id));
     if prev.map_or(true, |h| h <= max_h) {
         let top = ui.cursor().top();
@@ -3649,15 +3733,23 @@ fn menu_scroll<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
 /// Max height for a drop-down opened below `anchor`: what fits under it in the window,
 /// capped at `cap`, but never so small the list becomes useless.
 fn popup_max_height(ui: &Ui, anchor: Rect, cap: f32) -> f32 {
-    let below = ui.ctx().screen_rect().bottom() - anchor.bottom() - 24.0;
+    let below = ui.ctx().content_rect().bottom() - anchor.bottom() - 24.0;
     below.min(cap).max(120.0)
+}
+
+/// Width of a full-width menu row. While egui measures a freshly opened popup
+/// (its sizing pass), the available width is unbounded, so a row stretched to it
+/// would make the whole menu as wide as the window; there the row asks only for
+/// what it needs, and on later frames it fills the measured menu width.
+fn menu_row_width(ui: &Ui, want: f32) -> f32 {
+    if ui.is_sizing_pass() { want } else { ui.available_width().max(want) }
 }
 
 /// Thin separator with extra breathing room between menu groups.
 fn menu_sep(ui: &mut Ui) {
     ui.add_space(2.0);
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().line_segment([pos2(r.left() + 10.0, r.center().y), pos2(r.right() - 10.0, r.center().y)], Stroke::new(1.0, BORDER));
+    let (r, _) = ui.allocate_exact_size(vec2(menu_row_width(ui, 0.0), 1.0), Sense::hover());
+    ui.painter().line_segment([pos2(r.left() + 10.0, r.center().y), pos2(r.right() - 10.0, r.center().y)], Stroke::new(1.0, BORDER()));
     ui.add_space(2.0);
 }
 
@@ -3666,7 +3758,7 @@ fn menu_title(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.add_space(MENU_ICON_X);
-        ui.label(RichText::new(text).color(MUTED).size(12.0));
+        ui.label(RichText::new(text).color(MUTED()).size(12.0));
     });
     ui.add_space(2.0);
 }
@@ -3687,31 +3779,31 @@ fn menu_item(ui: &mut Ui, text: &str, shortcut: &str, enabled: bool, danger: boo
 fn menu_item_icon(ui: &mut Ui, icon: Option<Glyph>, text: &str, shortcut: &str, enabled: bool, danger: bool) -> Response {
     let font = regular(13.5);
     let key_font = regular(12.0);
-    let text_col = if !enabled { GRAY } else if danger { RED } else { TEXT };
-    let key_col = if enabled { MUTED } else { Color32::from_rgb(200, 205, 214) };
+    let text_col = if !enabled { GRAY } else if danger { RED } else { TEXT() };
+    let key_col = if enabled { MUTED() } else { DISABLED() };
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, text_col);
     let key_galley = ui.painter().layout_no_wrap(shortcut.to_owned(), key_font, key_col);
     let gap = if shortcut.is_empty() { 0.0 } else { 28.0 };
     let want = MENU_TEXT_X + galley.size().x + gap + key_galley.size().x + MENU_PAD_R;
-    let w = ui.available_width().max(want);
+    let w = menu_row_width(ui, want);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, MENU_ROW_H), sense);
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         let t = ui.ctx().animate_bool_with_time(resp.id, enabled && resp.hovered(), 0.08);
         if t > 0.0 {
-            let base = if danger { Color32::from_rgb(254, 236, 236) } else { BLUE_SOFT };
+            let base = if danger { DANGER_SOFT() } else { BLUE_SOFT() };
             let fill = if resp.is_pointer_button_down_on() {
-                if danger { Color32::from_rgb(252, 222, 222) } else { Color32::from_rgb(218, 232, 255) }
+                if danger { DANGER_PRESSED() } else { PRESSED() }
             } else {
                 base
             };
-            p.rect_filled(rect, 4.0, fill.gamma_multiply(t));
+            p.rect_filled(rect, rad(4.0), fill.gamma_multiply(t));
         }
         let col = if enabled && resp.hovered() && !danger { BLUE } else { text_col };
         if let Some(g) = icon {
             let ic = Rect::from_center_size(pos2(rect.left() + MENU_ICON_X + 8.0, rect.center().y), vec2(16.0, 16.0));
-            let icol = if !enabled { GRAY } else if danger { RED } else if resp.hovered() { BLUE } else { TEXT_SOFT };
+            let icol = if !enabled { GRAY } else if danger { RED } else if resp.hovered() { BLUE } else { TEXT_SOFT() };
             icons::glyph(p, ic, g, icol);
         }
         let ty = rect.center().y - galley.size().y / 2.0;
@@ -3741,7 +3833,7 @@ fn empty_menu_items(ui: &mut Ui, panel: &mut Panel, out: &mut PaneOut, is_pc: bo
             let r = menu_item_icon(ui, Some(g), text, &key, enabled, false);
             if r.clicked() {
                 out.actions.push(a);
-                ui.close_menu();
+                ui.close();
             }
         };
         item(ui, Glyph::FolderPlus, tr!("Новая папка", "New folder"), "F7", !is_pc, Action::MkDir);
@@ -3757,7 +3849,7 @@ fn empty_menu_items(ui: &mut Ui, panel: &mut Panel, out: &mut PaneOut, is_pc: bo
         item(ui, Glyph::Check, tr!("Выделить всё", "Select all"), "Ctrl+A", true, Action::MarkAll);
         item(ui, Glyph::Minus, tr!("Снять выделение", "Clear selection"), "Esc", !panel.marked.is_empty(), Action::ClearMarks);
         menu_sep(ui);
-        ui.menu_button(RichText::new(tr!("Сортировка", "Sort")).color(TEXT), |ui| {
+        ui.menu_button(RichText::new(tr!("Сортировка", "Sort")).color(TEXT()), |ui| {
             menu_style(ui, 210.0);
             for (label, key) in [
                 (tr!("По имени", "By name"), SortKey::Name),
@@ -3774,7 +3866,7 @@ fn empty_menu_items(ui: &mut Ui, panel: &mut Panel, out: &mut PaneOut, is_pc: bo
                 let text = format!("{label}{arrow}");
                 if menu_item_icon(ui, on.then_some(Glyph::Check), &text, "", true, false).clicked() {
                     panel.set_sort(key);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -3838,10 +3930,10 @@ fn drive_tooltip(ui: &mut Ui, title: &str, info: Option<&DriveInfo>) {
     const W: f32 = 150.0;
     ui.set_width(W);
     ui.spacing_mut().item_spacing.y = 3.0;
-    ui.add(egui::Label::new(RichText::new(title).font(semibold(13.0)).color(TEXT)).truncate());
+    ui.add(egui::Label::new(RichText::new(title).font(semibold(13.0)).color(TEXT())).truncate());
     let Some((total, free)) = info.and_then(|i| i.space) else {
         let text = if info.is_some() { tr!("Устройство не готово", "Device not ready") } else { tr!("Чтение…", "Reading…") };
-        ui.label(RichText::new(text).color(MUTED).size(12.0));
+        ui.label(RichText::new(text).color(MUTED()).size(12.0));
         return;
     };
     let used = total.saturating_sub(free);
@@ -3855,22 +3947,22 @@ fn drive_tooltip(ui: &mut Ui, title: &str, info: Option<&DriveInfo>) {
     });
     let (r, _) = ui.allocate_exact_size(vec2(W, 8.0), Sense::hover());
     let p = ui.painter();
-    let round = r.height() / 2.0;
+    let round = rad(r.height() / 2.0);
     p.rect_filled(r, round, BLUE);
     if frac > 0.0 {
         let split = r.left() + (r.width() * frac).max(round);
         let used_r = Rect::from_min_max(r.min, pos2(split.min(r.right()), r.bottom()));
-        let rounding = if frac >= 0.999 { Rounding::same(round) } else { Rounding { nw: round, sw: round, ne: 0.0, se: 0.0 } };
+        let rounding = if frac >= 0.999 { CornerRadius::from(round) } else { CornerRadius { nw: round.round() as u8, sw: round.round() as u8, ne: 0, se: 0 } };
         p.rect_filled(used_r, rounding, RED);
     }
     ui.horizontal(|ui| {
-        ui.label(RichText::new(tr!("занято", "used")).color(MUTED).size(11.0));
+        ui.label(RichText::new(tr!("занято", "used")).color(MUTED()).size(11.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(tr!("свободно", "free")).color(MUTED).size(11.0));
+            ui.label(RichText::new(tr!("свободно", "free")).color(MUTED()).size(11.0));
         });
     });
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(trf!("Всего {}", "Total {}", format_size(total))).color(TEXT_SOFT).size(12.0));
+        ui.label(RichText::new(trf!("Всего {}", "Total {}", format_size(total))).color(TEXT_SOFT()).size(12.0));
     });
 }
 
@@ -3912,12 +4004,12 @@ fn resize_columns(ui: &mut Ui, idx: usize, head: Rect, widths: &mut [f32; config
     let mut hot = None;
     for (k, x, direction) in edges {
         let grip = Rect::from_min_max(pos2(x - 5.0, head.top()), pos2(x + 5.0, head.bottom()));
-        let resp = ui.interact(grip, Id::new(("col-grip", idx, k)), Sense::click_and_drag());
+        let resp = ui.interact(grip, Id::unique(("col-grip", idx, k)), Sense::click_and_drag());
         if resp.hovered() || resp.dragged() {
             hot = Some(k);
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
-        let drag_id = Id::new(("column-drag", idx));
+        let drag_id = Id::unique(("column-drag", idx));
         if resp.drag_started() {
             let pointer_x = ui.input(|i| i.pointer.press_origin()).map_or(x, |p| p.x);
             // Widths of non-name columns are independent of the pane width.
@@ -3948,8 +4040,10 @@ fn resize_columns(ui: &mut Ui, idx: usize, head: Rect, widths: &mut [f32; config
         }
     }
     ui.ctx().memory_mut(|m| match hot {
-        Some(k) => m.data.insert_temp(Id::new(("col-grip-hot", idx)), k),
-        None => m.data.remove::<usize>(Id::new(("col-grip-hot", idx))),
+        Some(k) => {
+            m.data.insert_temp(Id::unique(("col-grip-hot", idx)), k);
+        }
+        None => m.data.remove::<usize>(Id::unique(("col-grip-hot", idx))),
     });
 }
 
@@ -3976,14 +4070,14 @@ fn header_menu(resp: Response, idx: usize, widths: &mut [f32; config::COLUMN_COU
         menu_style(ui, 280.0);
         if menu_item_icon(ui, Some(Glyph::Columns), tr!("Настроить колонки…", "Configure columns…"), "", true, false).clicked() {
             out.actions.push(Action::ConfigureColumns(idx));
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
         let changed = *widths != config::DEFAULT_COL_WIDTHS;
         if menu_item_icon(ui, None, tr!("Сбросить ширину колонок", "Reset column widths"), "", changed, false).clicked() {
             *widths = config::DEFAULT_COL_WIDTHS;
             out.cols_changed = true;
-            ui.close_menu();
+            ui.close();
         }
     });
 }
@@ -3994,19 +4088,19 @@ fn sort_arrow(p: &egui::Painter, at: egui::Pos2, asc: bool) {
     } else {
         (at + vec2(-4.5, -2.5), at + vec2(4.5, -2.5), at + vec2(0.0, 3.0))
     };
-    p.add(egui::Shape::convex_polygon(vec![a, b, c], TEXT_SOFT, Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(vec![a, b, c], TEXT_SOFT(), Stroke::NONE));
 }
 
 fn table(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect: Rect, col_widths: &mut [f32; config::COLUMN_COUNT - 1], layout: &mut config::ColumnLayout, out: &mut PaneOut, file_icons: Option<&mut crate::file_icons::FileIcons>) {
     let content_width = Cols::content_width(rect.width(), col_widths, layout);
     #[allow(deprecated)]
-    ui.allocate_ui_at_rect(rect, |ui| {
+    ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(rect), |ui| {
         egui::ScrollArea::horizontal().id_salt(("columns-scroll", idx))
-            .auto_shrink([false, false]).drag_to_scroll(false).show(ui, |ui| {
+            .auto_shrink([false, false]).scroll_source(egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() }).show(ui, |ui| {
                 ui.set_min_width(content_width);
                 let (content, _) = ui.allocate_exact_size(vec2(content_width, ui.available_height()), Sense::hover());
                 #[allow(deprecated)]
-                ui.allocate_ui_at_rect(content, |ui| {
+                ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(content), |ui| {
                     table_content(ui, panel, active, idx, content, col_widths, layout, out, file_icons);
                 });
             });
@@ -4020,20 +4114,20 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
     resize_columns(ui, idx, head, col_widths, layout, out);
     let cols = Cols::layout(head, col_widths, layout);
     let p = ui.painter().clone();
-    p.rect_filled(head, 8.0, HEADER_BG);
+    p.rect_filled(head, rad(8.0), HEADER_BG());
 
     let header_cols: Vec<_> = layout.order.into_iter().filter_map(|id| {
         let key = column_sort(id);
         cols.cell(id).map(|cell| (id, column_label(id), key, cell))
     }).collect();
-    let grip_hot = |k: usize| ui.ctx().memory(|m| m.data.get_temp::<usize>(Id::new(("col-grip-hot", idx)))) == Some(k);
+    let grip_hot = |k: usize| ui.ctx().memory(|m| m.data.get_temp::<usize>(Id::unique(("col-grip-hot", idx)))) == Some(k);
     for (k, (id, label, key, (x0, x1))) in header_cols.into_iter().enumerate() {
         // leave the column edges to the resize grips (see `resize_columns`)
         let cr = Rect::from_min_max(pos2(x0 + 5.0, head.top()), pos2(x1 - 5.0, head.bottom()));
-        let resp = ui.interact(cr, Id::new(("head", idx, k)), Sense::click());
+        let resp = ui.interact(cr, Id::unique(("head", idx, k)), Sense::click());
         if k > 0 {
             let col = id.checked_sub(1);
-            let (h, c) = if col.is_some_and(grip_hot) { (13.0, BLUE) } else { (9.0, BORDER) };
+            let (h, c) = if col.is_some_and(grip_hot) { (13.0, BLUE) } else { (9.0, BORDER()) };
             p.line_segment([pos2(x0, head.center().y - h), pos2(x0, head.center().y + h)], Stroke::new(if c == BLUE { 2.0 } else { 1.0 }, c));
         }
         let tx = if k == 0 { x0 + 11.0 } else { x0 + 12.0 };
@@ -4041,7 +4135,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
         let sorted = panel.sort == key;
         let available = (x1 - tx - 8.0 - if sorted { 18.0 } else { 0.0 }).max(0.0);
         let shown = elide_with_suffix(&hp, label, &regular(11.5), available, "...");
-        hp.text(pos2(tx, head.center().y), Align2::LEFT_CENTER, &shown, regular(11.5), if resp.hovered() { BLUE } else { TEXT_SOFT });
+        hp.text(pos2(tx, head.center().y), Align2::LEFT_CENTER, &shown, regular(11.5), if resp.hovered() { BLUE } else { TEXT_SOFT() });
         if shown != label { resp.clone().on_hover_text(label); }
         if sorted {
             sort_arrow(&hp, pos2(x1 - 12.0, head.center().y), panel.asc);
@@ -4068,16 +4162,16 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
             Align2::CENTER_CENTER,
             msg,
             regular(12.5),
-            if panel.error.is_some() || panel.filter_error.is_some() { RED } else { MUTED },
+            if panel.error.is_some() || panel.filter_error.is_some() { RED } else { MUTED() },
         );
         if n == 0 {
-            let empty = ui.interact(rows_r, Id::new(("rows-bg", idx)), Sense::click());
+            let empty = ui.interact(rows_r, Id::unique(("rows-bg", idx)), Sense::click());
             empty_menu(empty, panel, out);
             return;
         }
     }
 
-    let mut sa = egui::ScrollArea::vertical().id_salt(("rows", idx)).auto_shrink([false, false]).drag_to_scroll(false);
+    let mut sa = egui::ScrollArea::vertical().id_salt(("rows", idx)).auto_shrink([false, false]).scroll_source(egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() });
 
     // ── rubber-band selection: press on empty space (or on a row) and drag ──
     let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
@@ -4085,7 +4179,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
         ui.input(|i| (i.pointer.primary_down(), i.pointer.interact_pos(), i.pointer.press_origin()));
     // background catcher: registered before the rows, so rows win where they exist
     // and this one gets the empty area below the last row.
-    let empty = ui.interact(rows_r, Id::new(("rows-bg", idx)), Sense::click_and_drag());
+    let empty = ui.interact(rows_r, Id::unique(("rows-bg", idx)), Sense::click_and_drag());
     if empty.drag_started_by(egui::PointerButton::Primary) {
         start_band(panel, press.map_or(rows_r.top(), |p| p.y), rows_r, ctrl);
     }
@@ -4139,7 +4233,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
     }
     #[allow(deprecated)]
     let sa_out = ui
-        .allocate_ui_at_rect(rows_r, |ui| {
+        .scope_builder(eframe::egui::UiBuilder::new().max_rect(rows_r), |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             sa.show_rows(ui, ROW_H, n, |ui, range| {
                 for i in range {
@@ -4153,11 +4247,11 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                     let is_marked = panel.marked.contains(&e.path);
                     let bg = rect.shrink2(vec2(0.0, 1.0));
                     if is_cur {
-                        pr.rect_filled(bg, 6.0, if active { SEL_ACTIVE } else { SEL_INACTIVE });
+                        pr.rect_filled(bg, rad(6.0), if active { SEL_ACTIVE() } else { SEL_INACTIVE() });
                     } else if is_marked {
-                        pr.rect_filled(bg, 6.0, MARKED_BG);
+                        pr.rect_filled(bg, rad(6.0), MARKED_BG());
                     } else if resp.hovered() {
-                        pr.rect_filled(bg, 6.0, HOVER);
+                        pr.rect_filled(bg, rad(6.0), HOVER());
                     }
                     let open_age = opening.as_ref().filter(|o| o.path == e.path)
                         .map(|o| (now - o.started).max(0.0) as f32)
@@ -4167,14 +4261,14 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                     });
                     if let Some(age) = open_age {
                         let pulse = (1.0 - age / OPEN_FEEDBACK_SECS as f32).powi(2);
-                        pr.rect_filled(bg, 6.0, BLUE.gamma_multiply(0.16 * pulse));
+                        pr.rect_filled(bg, rad(6.0), BLUE.gamma_multiply(0.16 * pulse));
                         let stripe = Rect::from_min_size(bg.min + vec2(2.0, 4.0), vec2(3.0, bg.height() - 8.0));
-                        pr.rect_filled(stripe, 2.0, BLUE.gamma_multiply(open_fade));
+                        pr.rect_filled(stripe, rad(2.0), BLUE.gamma_multiply(open_fade));
                     }
                     if !is_cur {
                         pr.line_segment(
                             [pos2(rect.left() + 10.0, rect.bottom() - 0.5), pos2(rect.right() - 10.0, rect.bottom() - 0.5)],
-                            Stroke::new(1.0, ROW_LINE),
+                            Stroke::new(1.0, ROW_LINE()),
                         );
                     }
                     let cy = rect.center().y;
@@ -4211,11 +4305,11 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                         }
                     }
                     let name_color = if is_marked {
-                        MARKED_FG
+                        MARKED_FG()
                     } else if e.hidden {
-                        MUTED
+                        MUTED()
                     } else {
-                        TEXT
+                        TEXT()
                     };
                     let label = if e.is_drive { trf!("Локальный диск ({})", "Local Disk ({})", e.name) } else { e.name.clone() };
                     let name_font = if is_marked { semibold(12.0) } else { regular(12.0) };
@@ -4250,7 +4344,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                         let t = if e.is_parent || e.is_drive { String::new() } else { format_time(e.modified) };
                         let t = elide_right(pr, &t, &regular(11.5), x1 - x0 - 22.0);
                         pr.with_clip_rect(pr.clip_rect().intersect(Rect::from_min_max(pos2(x0, rect.top()), pos2(x1, rect.bottom()))))
-                            .text(pos2(x0 + 12.0, cy), Align2::LEFT_CENTER, t, regular(11.5), TEXT_SOFT);
+                            .text(pos2(x0 + 12.0, cy), Align2::LEFT_CENTER, t, regular(11.5), TEXT_SOFT());
                     }
                     let size_txt = if e.is_parent {
                         String::new()
@@ -4266,7 +4360,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                     };
                     if let Some(size) = cols.size {
                         let size_txt = elide_right(pr, &size_txt, &regular(11.5), size.1 - size.0 - 24.0);
-                        pr.text(pos2(size.1 - 16.0, cy), Align2::RIGHT_CENTER, size_txt, regular(11.5), TEXT_SOFT);
+                        pr.text(pos2(size.1 - 16.0, cy), Align2::RIGHT_CENTER, size_txt, regular(11.5), TEXT_SOFT());
                         if e.is_dir && !e.is_parent && !e.is_drive {
                             let cell = Rect::from_min_max(pos2(size.0, rect.top()), pos2(size.1, rect.bottom()));
                             if let Some(size) = panel.folder_sizes.sizes.get(&e.path) {
@@ -4289,13 +4383,13 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                             };
                             let text = elide_right(pr, &text, &regular(11.5), x1 - x0 - 22.0);
                             pr.with_clip_rect(pr.clip_rect().intersect(Rect::from_min_max(pos2(x0, rect.top()), pos2(x1, rect.bottom()))))
-                                .text(pos2(x0 + 12.0, cy), Align2::LEFT_CENTER, text, regular(11.5), TEXT_SOFT);
+                                .text(pos2(x0 + 12.0, cy), Align2::LEFT_CENTER, text, regular(11.5), TEXT_SOFT());
                         }
                     }
                     if let Some((x0, x1)) = cols.kind {
                         let kind_txt = elide_right(pr, &e.type_name, &regular(11.5), x1 - x0 - 22.0);
                         pr.with_clip_rect(pr.clip_rect().intersect(Rect::from_min_max(pos2(x0, rect.top()), pos2(x1 - 4.0, rect.bottom()))))
-                            .text(pos2(x0 + 12.0, cy), Align2::LEFT_CENTER, kind_txt, regular(11.5), TEXT_SOFT);
+                            .text(pos2(x0 + 12.0, cy), Align2::LEFT_CENTER, kind_txt, regular(11.5), TEXT_SOFT());
                     }
 
                     if resp.clicked() || resp.secondary_clicked() {
@@ -4307,7 +4401,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                         }
                         panel.cursor = i;
                     }
-                    if row_double_clicked(&resp, Id::new(("file-row", idx, &panel.path, &e.path))) {
+                    if row_double_clicked(&resp, Id::unique(("file-row", idx, &panel.path, &e.path))) {
                         panel.cursor = i;
                         out.actions.push(Action::Open);
                     }
@@ -4372,7 +4466,7 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                             let r = menu_item_icon(ui, Some(g), name, &key, true, matches!(a, Action::Delete | Action::DeletePermanent));
                             if r.clicked() {
                                 out.actions.push(a);
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     });
@@ -4380,51 +4474,51 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
             })
         })
         .inner;
-    panel.scroll_offset = sa_out.state.offset.y;
+    panel.scroll_offset = sa_out.state.clamped_offset().y;
     panel.view_height = sa_out.inner_rect.height();
 
     // translucent selection band while dragging
     if let Some((y0, y1)) = band {
         let r = Rect::from_min_max(pos2(rows_r.left() + 2.0, y0.min(y1)), pos2(rows_r.right() - 2.0, y0.max(y1)));
         let p = ui.painter().with_clip_rect(rows_r.intersect(ui.clip_rect()));
-        p.rect(r, 6.0, Color32::from_rgba_unmultiplied(22, 119, 255, 28), Stroke::new(1.0, Color32::from_rgba_unmultiplied(22, 119, 255, 140)));
+        p.rect(r, rad(6.0), Color32::from_rgba_unmultiplied(22, 119, 255, 28), Stroke::new(1.0, Color32::from_rgba_unmultiplied(22, 119, 255, 140)), eframe::egui::StrokeKind::Middle);
     }
 }
 
 fn footer(ui: &mut Ui, panel: &Panel, rect: Rect) {
     let p = ui.painter().clone();
-    p.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, BORDER));
+    p.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, BORDER()));
     let cy = rect.center().y;
     icons::folder(&p, Rect::from_center_size(pos2(rect.left() + 26.0, cy), vec2(20.0, 18.0)));
     let items = panel.visible.iter().filter(|&&i| !panel.all[i].is_parent).count();
-    let mut x = p.text(pos2(rect.left() + 44.0, cy), Align2::LEFT_CENTER, items_text(items as u64), regular(14.0), TEXT_SOFT).right();
+    let mut x = p.text(pos2(rect.left() + 44.0, cy), Align2::LEFT_CENTER, items_text(items as u64), regular(14.0), TEXT_SOFT()).right();
     if !panel.marked.is_empty() {
-        p.line_segment([pos2(x + 12.0, cy - 9.0), pos2(x + 12.0, cy + 9.0)], Stroke::new(1.0, BORDER));
+        p.line_segment([pos2(x + 12.0, cy - 9.0), pos2(x + 12.0, cy + 9.0)], Stroke::new(1.0, BORDER()));
         x = p
             .text(
                 pos2(x + 24.0, cy),
                 Align2::LEFT_CENTER,
                 trf!("Выбрано: {} ({})", "Selected: {} ({})", panel.marked.len(), format_size(panel.marked_size())),
                 regular(14.0),
-                MARKED_FG,
+                MARKED_FG(),
             )
             .right();
     }
     if panel.is_loading() {
-        p.line_segment([pos2(x + 12.0, cy - 9.0), pos2(x + 12.0, cy + 9.0)], Stroke::new(1.0, BORDER));
-        x = p.text(pos2(x + 24.0, cy), Align2::LEFT_CENTER, tr!("Загрузка…", "Loading…"), regular(14.0), MUTED).right();
+        p.line_segment([pos2(x + 12.0, cy - 9.0), pos2(x + 12.0, cy + 9.0)], Stroke::new(1.0, BORDER()));
+        x = p.text(pos2(x + 24.0, cy), Align2::LEFT_CENTER, tr!("Загрузка…", "Loading…"), regular(14.0), MUTED()).right();
     }
     let _ = x;
     let mut rx = rect.right() - 16.0;
     if !panel.is_pc() {
-        let r = p.text(pos2(rx, cy), Align2::RIGHT_CENTER, trf!("Всего {}", "Total {}", format_size(panel.bytes)), regular(14.0), TEXT_SOFT);
+        let r = p.text(pos2(rx, cy), Align2::RIGHT_CENTER, trf!("Всего {}", "Total {}", format_size(panel.bytes)), regular(14.0), TEXT_SOFT());
         rx = r.left() - 12.0;
         if let Some((total, free)) = panel.disk {
-            p.line_segment([pos2(rx, cy - 9.0), pos2(rx, cy + 9.0)], Stroke::new(1.0, BORDER));
+            p.line_segment([pos2(rx, cy - 9.0), pos2(rx, cy + 9.0)], Stroke::new(1.0, BORDER()));
             let used = 1.0 - free as f32 / total.max(1) as f32;
             let br = Rect::from_min_size(pos2(rx - 12.0 - 60.0, cy - 3.0), vec2(60.0, 6.0));
             icons::bar(&p, br, used, if used > 0.9 { RED } else { BLUE });
-            p.text(pos2(br.left() - 8.0, cy), Align2::RIGHT_CENTER, trf!("Свободно {}", "{} free", format_size(free)), regular(14.0), TEXT_SOFT);
+            p.text(pos2(br.left() - 8.0, cy), Align2::RIGHT_CENTER, trf!("Свободно {}", "{} free", format_size(free)), regular(14.0), TEXT_SOFT());
         }
     }
 }
@@ -4440,11 +4534,11 @@ fn side_btn(ui: &mut Ui, look: Look, active: bool, label: Option<&str>, width: f
     let (r, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let p = ui.painter();
     if active {
-        p.rect_filled(r, 10.0, BLUE_SOFT);
+        p.rect_filled(r, rad(10.0), BLUE_SOFT());
     } else if resp.hovered() {
-        p.rect_filled(r, 10.0, HOVER);
+        p.rect_filled(r, rad(10.0), HOVER());
     }
-    let color = if active { BLUE } else { SLATE };
+    let color = if active { BLUE } else { SLATE() };
     match label {
         Some(text) => {
             let ir = Rect::from_center_size(pos2(r.left() + 20.0, r.center().y), vec2(22.0, 22.0));
@@ -4454,7 +4548,7 @@ fn side_btn(ui: &mut Ui, look: Look, active: bool, label: Option<&str>, width: f
                 Align2::LEFT_CENTER,
                 text,
                 if active { semibold(14.0) } else { regular(14.0) },
-                if active { BLUE } else { TEXT },
+                if active { BLUE } else { TEXT() },
             );
         }
         None => draw_look(p, r.shrink(11.0), look, color),
@@ -4474,11 +4568,11 @@ fn icon_picker(ui: &mut Ui, current: &mut Glyph, tint: Option<Color32>, selected
                 let on = selected && *current == *g;
                 let p = ui.painter();
                 if on {
-                    p.rect(r, 8.0, CARD, Stroke::new(1.5, BLUE));
+                    p.rect(r, rad(8.0), CARD(), Stroke::new(1.5, BLUE), eframe::egui::StrokeKind::Middle);
                 } else if resp.hovered() {
-                    p.rect_filled(r, 8.0, CARD);
+                    p.rect_filled(r, rad(8.0), CARD());
                 }
-                icons::glyph(p, r.shrink(8.0), *g, tint.unwrap_or(if on { BLUE } else { SLATE }));
+                icons::glyph(p, r.shrink(8.0), *g, tint.unwrap_or(if on { BLUE } else { SLATE() }));
                 if resp.clicked() {
                     *current = *g;
                     clicked = true;
@@ -4496,7 +4590,7 @@ fn resource_grid(ui: &mut Ui, cache: &mut IconCache, ctx: &egui::Context, ed: &m
     let per_page = COLS * ROWS;
     let total = *ed.lib_count.get_or_insert_with(|| iconsrc::count(&ed.lib));
     if total == 0 {
-        ui.label(RichText::new(tr!("В этом файле нет значков", "This file has no icons")).color(MUTED));
+        ui.label(RichText::new(tr!("В этом файле нет значков", "This file has no icons")).color(MUTED()));
         return;
     }
     let pages = (total + per_page - 1) / per_page;
@@ -4516,9 +4610,9 @@ fn resource_grid(ui: &mut Ui, cache: &mut IconCache, ctx: &egui::Context, ed: &m
                 let on = chosen.as_ref().is_some_and(|(f, n)| *n == i as i32 && f == &ed.lib);
                 let p = ui.painter();
                 if on {
-                    p.rect(r, 8.0, CARD, Stroke::new(1.5, BLUE));
+                    p.rect(r, rad(8.0), CARD(), Stroke::new(1.5, BLUE), eframe::egui::StrokeKind::Middle);
                 } else if resp.hovered() {
-                    p.rect_filled(r, 8.0, CARD);
+                    p.rect_filled(r, rad(8.0), CARD());
                 }
                 let spec = iconsrc::make_spec(&ed.lib, i as i32);
                 if let Some(t) = icon_texture(cache, ctx, &spec, &folder, 32) {
@@ -4536,7 +4630,7 @@ fn resource_grid(ui: &mut Ui, cache: &mut IconCache, ctx: &egui::Context, ed: &m
             if ui.add_enabled(ed.page > 0, egui::Button::new("◀")).clicked() {
                 ed.page -= 1;
             }
-            ui.label(RichText::new(trf!("Страница {} из {} · всего значков: {total}", "Page {} of {} · icons in total: {total}", ed.page + 1, pages)).size(12.5).color(TEXT_SOFT));
+            ui.label(RichText::new(trf!("Страница {} из {} · всего значков: {total}", "Page {} of {} · icons in total: {total}", ed.page + 1, pages)).size(12.5).color(TEXT_SOFT()));
             if ui.add_enabled(ed.page + 1 < pages, egui::Button::new("▶")).clicked() {
                 ed.page += 1;
             }
@@ -4546,13 +4640,9 @@ fn resource_grid(ui: &mut Ui, cache: &mut IconCache, ctx: &egui::Context, ed: &m
 
 /// Small rounded toggle button.
 fn pill(ui: &mut Ui, text: &str, on: bool) -> Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).size(13.5).color(if on { BLUE } else { TEXT }))
-            .fill(if on { BLUE_SOFT } else { INPUT_BG })
-            .stroke(if on { Stroke::new(1.0, BLUE) } else { Stroke::new(1.0, BORDER) })
-            .rounding(16.0)
-            .min_size(vec2(0.0, 30.0)),
-    )
+    let (fill, fg, stroke) = if on { (BLUE_SOFT(), BLUE, Stroke::new(1.0, BLUE)) } else { (INPUT_BG(), TEXT(), Stroke::new(1.0, BORDER())) };
+    let pad = ui.spacing().button_padding;
+    paint_btn(ui, text, regular(13.5), fill, fg, stroke, rad(16.0), vec2(0.0, 30.0), pad)
 }
 
 /// Draw a favourite's icon: custom texture, or the glyph in its colour (`fallback` otherwise).
@@ -4569,11 +4659,6 @@ fn draw_look(p: &egui::Painter, r: Rect, look: Look, fallback: Color32) {
 
 /// Corner radius of flat (JetBrains-style) dialogs.
 const FLAT_R: f32 = 10.0;
-/// Background of side trees and footers in flat dialogs.
-const NAV_BG: Color32 = Color32::from_rgb(247, 248, 250);
-const NAV_SEL: Color32 = Color32::from_rgb(212, 226, 255);
-const FIELD_BORDER: Color32 = Color32::from_rgb(201, 205, 214);
-const SEARCH_HIT: Color32 = Color32::from_rgb(255, 232, 140);
 const SETTINGS_NAV_W: f32 = 232.0;
 
 /// Left-hand tree of settings pages (only the ones matching the search).
@@ -4586,17 +4671,63 @@ fn settings_nav(ui: &mut Ui, group: &mut SettingsGroup, visible: &[SettingsGroup
         let on = *group == g;
         let p = ui.painter();
         if on {
-            p.rect_filled(r, 5.0, NAV_SEL);
+            p.rect_filled(r, rad(5.0), NAV_SEL());
         } else if resp.hovered() {
-            p.rect_filled(r, 5.0, TRACK);
+            p.rect_filled(r, rad(5.0), TRACK());
         }
-        icons::glyph(p, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(16.0, 16.0)), glyph, if on { BLUE } else { SLATE });
-        p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, name, regular(13.5), TEXT);
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, name));
+        icons::glyph(p, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(16.0, 16.0)), glyph, if on { BLUE } else { SLATE() });
+        p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, name, regular(13.5), TEXT());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
         if resp.clicked() {
             *group = g;
         }
     }
+}
+
+/// The «Оформление» settings page: font, corner rounding and colour theme.
+fn appearance_page(ui: &mut Ui, look: &mut theme::Appearance) {
+    jb_group(ui, tr!("Шрифт", "Font"));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tr!("Шрифт интерфейса:", "Interface font:")).size(13.5).color(TEXT()));
+        ui.add_space(8.0);
+        egui::ComboBox::from_id_salt("settings-font")
+            .selected_text(theme::font_name(&look.font))
+            .width(200.0)
+            .show_ui(ui, |ui| {
+                for (key, name) in theme::available_fonts() {
+                    if ui.selectable_label(look.font == key, name).clicked() {
+                        look.font = key.to_string();
+                    }
+                }
+            });
+    });
+    ui.spacing_mut().item_spacing.y = 2.0;
+    jb_comment(ui, 0.0, tr!("Montserrat встроен в Quokka; остальные шрифты берутся из Windows и показываются, только если установлены.", "Montserrat is built into Quokka; the other fonts come from Windows and are listed only when installed."));
+    ui.spacing_mut().item_spacing.y = 6.0;
+
+    jb_group(ui, tr!("Скругление углов", "Corner rounding"));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tr!("Скругление:", "Rounding:")).size(13.5).color(TEXT()));
+        ui.add_space(8.0);
+        ui.add(egui::Slider::new(&mut look.rounding, 0..=100).suffix(" %").step_by(5.0));
+        if jb_btn(ui, tr!("Сбросить", "Reset"), false).clicked() {
+            look.rounding = 100;
+        }
+    });
+    ui.spacing_mut().item_spacing.y = 2.0;
+    jb_comment(ui, 0.0, tr!("100 % — как задумано, 0 % — прямые углы у кнопок, полей, окон и списков.", "100 % — as designed, 0 % — square corners on buttons, fields, windows and lists."));
+    ui.spacing_mut().item_spacing.y = 6.0;
+
+    jb_group(ui, tr!("Тема", "Theme"));
+    ui.horizontal(|ui| {
+        for (mode, name) in [(theme::ThemeMode::Light, tr!("Светлая", "Light")), (theme::ThemeMode::Dark, tr!("Тёмная", "Dark"))] {
+            ui.radio_value(&mut look.theme, mode, RichText::new(name).size(13.5).color(TEXT()));
+            ui.add_space(12.0);
+        }
+    });
+    ui.spacing_mut().item_spacing.y = 2.0;
+    jb_comment(ui, 0.0, tr!("Применяется сразу ко всем окнам Quokka.", "Applied immediately to all Quokka windows."));
+    ui.spacing_mut().item_spacing.y = 6.0;
 }
 
 /// Lay out `add` inside an area the caller has already allocated. Unlike `allocate_new_ui`
@@ -4609,13 +4740,13 @@ fn place<R>(ui: &mut Ui, builder: egui::UiBuilder, add: impl FnOnce(&mut Ui) -> 
 /// Titled separator: «Заголовок ─────────».
 fn jb_group(ui: &mut Ui, title: &str) {
     ui.add_space(20.0);
-    let g = ui.painter().layout_no_wrap(title.to_string(), semibold(13.0), TEXT);
+    let g = ui.painter().layout_no_wrap(title.to_string(), semibold(13.0), TEXT());
     let size = g.size();
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), size.y + 4.0), Sense::hover());
     let y = r.center().y;
-    ui.painter().galley(pos2(r.left(), y - size.y / 2.0), g, TEXT);
+    ui.painter().galley(pos2(r.left(), y - size.y / 2.0), g, TEXT());
     if r.left() + size.x + 10.0 < r.right() {
-        ui.painter().hline((r.left() + size.x + 10.0)..=r.right(), y, Stroke::new(1.0, BORDER));
+        ui.painter().hline((r.left() + size.x + 10.0)..=r.right(), y, Stroke::new(1.0, BORDER()));
     }
     ui.add_space(8.0);
 }
@@ -4624,7 +4755,7 @@ fn jb_group(ui: &mut Ui, title: &str) {
 fn jb_comment(ui: &mut Ui, indent: f32, text: &str) {
     ui.horizontal_top(|ui| {
         ui.add_space(indent);
-        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(MUTED)).wrap());
+        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(MUTED())).wrap());
     });
 }
 
@@ -4632,9 +4763,9 @@ fn jb_comment(ui: &mut Ui, indent: f32, text: &str) {
 fn jb_option(ui: &mut Ui, value: &mut bool, label: &str, hint: &str, query: &str) -> bool {
     let hit = !query.is_empty() && (label.to_lowercase().contains(query) || hint.to_lowercase().contains(query));
     let bg = ui.painter().add(egui::Shape::Noop);
-    let resp = ui.checkbox(value, RichText::new(label).size(13.5).color(TEXT));
+    let resp = ui.checkbox(value, RichText::new(label).size(13.5).color(TEXT()));
     if hit {
-        ui.painter().set(bg, egui::Shape::rect_filled(resp.rect.expand2(vec2(4.0, 1.0)), 4.0, SEARCH_HIT));
+        ui.painter().set(bg, egui::Shape::rect_filled(resp.rect.expand2(vec2(4.0, 1.0)), rad(4.0), SEARCH_HIT()));
     }
     ui.spacing_mut().item_spacing.y = 2.0;
     jb_comment(ui, 26.0, hint);
@@ -4648,7 +4779,7 @@ fn jb_btn(ui: &mut Ui, text: &str, primary: bool) -> Response {
     let (fill, fg, stroke) = if primary {
         (BLUE, Color32::WHITE, Stroke::NONE)
     } else {
-        (CARD, TEXT, Stroke::new(1.0, FIELD_BORDER))
+        (CARD(), TEXT(), Stroke::new(1.0, FIELD_BORDER()))
     };
     sized_btn(ui, text, fill, fg, stroke)
 }
@@ -4656,34 +4787,55 @@ fn jb_btn(ui: &mut Ui, text: &str, primary: bool) -> Response {
 /// The one size for text buttons, taken from «Готово» in the settings:
 /// 13.5 pt text, 30 px high, at least 76 px wide, 16 × 4 padding, 5 px corners.
 fn sized_btn(ui: &mut Ui, text: &str, fill: Color32, fg: Color32, stroke: Stroke) -> Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding = vec2(16.0, 4.0);
-        ui.add(egui::Button::new(RichText::new(text).size(13.5).color(fg)).fill(fill).stroke(stroke).rounding(5.0).min_size(vec2(76.0, 30.0)))
-    })
-    .inner
+    paint_btn(ui, text, regular(13.5), fill, fg, stroke, rad(5.0), vec2(76.0, 30.0), vec2(16.0, 4.0))
+}
+
+/// A text button drawn by hand so that every fill, including the coloured ones,
+/// reacts to the pointer: a tint on hover, a stronger one while pressed.
+#[allow(clippy::too_many_arguments)]
+fn paint_btn(ui: &mut Ui, text: &str, font: egui::FontId, fill: Color32, fg: Color32, stroke: Stroke, radius: f32, min: egui::Vec2, pad: egui::Vec2) -> Response {
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, fg);
+    let size = (galley.size() + pad * 2.0).max(min);
+    let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
+    if ui.is_rect_visible(r) {
+        let p = ui.painter();
+        let t = ui.ctx().animate_bool_with_time(resp.id, enabled && resp.hovered(), 0.08);
+        p.rect(r, radius, fill, stroke, eframe::egui::StrokeKind::Inside);
+        if t > 0.0 {
+            let tint = hover_tint(enabled && resp.is_pointer_button_down_on());
+            p.rect_filled(r, radius, tint.gamma_multiply(t));
+        }
+        if resp.has_focus() {
+            p.rect_stroke(r.expand(2.0), radius + 2.0, Stroke::new(1.5, BLUE), eframe::egui::StrokeKind::Inside);
+        }
+        p.galley(r.center() - galley.size() / 2.0, galley, fg);
+    }
+    resp
 }
 
 /// Small toolbar icon (list toolbars, field actions).
 fn jb_tool(ui: &mut Ui, g: Glyph, enabled: bool, tip: &str) -> Response {
     let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), if enabled { Sense::click() } else { Sense::hover() });
     if enabled && resp.hovered() {
-        ui.painter().rect_filled(r, 5.0, TRACK);
+        ui.painter().rect_filled(r, rad(5.0), TRACK());
     }
-    icons::glyph(ui.painter(), r.shrink(6.0), g, if enabled { TEXT_SOFT } else { Color32::from_rgb(200, 205, 214) });
+    icons::glyph(ui.painter(), r.shrink(6.0), g, if enabled { TEXT_SOFT() } else { DISABLED() });
     resp.on_hover_text(tip)
 }
 
 /// Option toggle that lives inside a search field («Aa», «W», «.*»).
 fn field_toggle(ui: &mut Ui, label: &str, on: bool, tip: &str) -> Response {
     let font = if label == ".*" { mono(13.0) } else { semibold(12.0) };
-    let col = if on { BLUE } else { TEXT_SOFT };
+    let col = if on { BLUE } else { TEXT_SOFT() };
     let g = ui.painter().layout_no_wrap(label.to_string(), font, col);
     let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 10.0).max(24.0), 22.0), Sense::click());
     let p = ui.painter();
     if on {
-        p.rect(r, 4.0, BLUE_SOFT, Stroke::new(1.0, BLUE));
+        p.rect(r, rad(4.0), BLUE_SOFT(), Stroke::new(1.0, BLUE), eframe::egui::StrokeKind::Middle);
     } else if resp.hovered() {
-        p.rect_filled(r, 4.0, TRACK);
+        p.rect_filled(r, rad(4.0), TRACK());
     }
     p.galley(r.center() - g.size() / 2.0, g, col);
     resp.on_hover_text(tip)
@@ -4706,11 +4858,11 @@ fn jb_field(
     let focused = ui.memory(|m| m.has_focus(id));
     let mut picked = false;
     let enabled = ui.is_enabled();
-    let out = egui::Frame::none()
-        .fill(CARD)
-        .stroke(if focused { Stroke::new(1.5, BLUE) } else { Stroke::new(1.0, FIELD_BORDER) })
-        .rounding(5.0)
-        .inner_margin(Margin { left: 8.0, right: 6.0, top: 3.0, bottom: 3.0 })
+    let out = egui::Frame::NONE
+        .fill(CARD())
+        .stroke(if focused { Stroke::new(1.5, BLUE) } else { Stroke::new(1.0, FIELD_BORDER()) })
+        .corner_radius(rad(5.0))
+        .inner_margin(Margin { left: 8, right: 6, top: 3, bottom: 3 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -4719,19 +4871,19 @@ fn jb_field(
                 let sense = if has_hist { Sense::click() } else { Sense::hover() };
                 let (r, resp) = ui.allocate_exact_size(vec2(if has_hist { 30.0 } else { 22.0 }, 26.0), sense);
                 if has_hist && resp.hovered() {
-                    ui.painter().rect_filled(r, 4.0, TRACK);
+                    ui.painter().rect_filled(r, rad(4.0), TRACK());
                 }
                 let gr = Rect::from_center_size(pos2(r.left() + 11.0, r.center().y), vec2(15.0, 15.0));
-                icons::glyph(ui.painter(), gr, glyph, if focused { BLUE } else { SLATE });
+                icons::glyph(ui.painter(), gr, glyph, if focused { BLUE } else { SLATE() });
                 if has_hist {
                     let cr = Rect::from_center_size(pos2(r.right() - 6.0, r.center().y + 1.0), vec2(9.0, 9.0));
-                    icons::glyph(ui.painter(), cr, Glyph::ChevronDown, SLATE);
+                    icons::glyph(ui.painter(), cr, Glyph::ChevronDown, SLATE());
                     let popup = id.with("history");
                     let resp = resp.on_hover_text(tr!("Недавние", "Recent"));
                     if resp.clicked() {
-                        ui.memory_mut(|m| m.toggle_popup(popup));
+                        egui::Popup::toggle_id(ui.ctx(), popup);
                     }
-                    egui::popup_below_widget(ui, popup, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                    egui::Popup::from_response(&resp).id(popup).open_memory(None).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
                         menu_style(ui, 320.0);
                         menu_title(ui, tr!("Недавние", "Recent"));
                         egui::ScrollArea::vertical().max_height(popup_max_height(ui, resp.rect, 320.0)).show(ui, |ui| {
@@ -4750,12 +4902,16 @@ fn jb_field(
                     ui.add_space(4.0);
                     egui::TextEdit::singleline(text)
                         .id(id)
-                        .frame(false)
+                        .frame(egui::Frame::NONE)
                         .desired_width(ui.available_width())
-                        .margin(vec2(4.0, 5.0))
+                        // the hint uses the field's font and both are centred vertically,
+                        // so neither drifts up with fonts that have tall line metrics
+                        .margin(vec2(4.0, 2.0))
+                        .min_size(vec2(0.0, 26.0))
+                        .align(Align2::LEFT_CENTER)
+                        .hint_text(RichText::new(hint).font(font.clone()).color(MUTED()))
                         .font(font)
-                        .text_color(if enabled { TEXT } else { TEXT_SOFT })
-                        .hint_text(RichText::new(hint).color(MUTED))
+                        .text_color(if enabled { TEXT() } else { TEXT_SOFT() })
                         .show(ui)
                 })
                 .inner
@@ -4769,18 +4925,18 @@ fn jb_field(
 /// Joined toggle buttons; returns the clicked index.
 fn segmented(ui: &mut Ui, items: &[&str], sel: usize) -> Option<usize> {
     let mut clicked = None;
-    egui::Frame::none().stroke(Stroke::new(1.0, FIELD_BORDER)).rounding(5.0).inner_margin(Margin::same(2.0)).show(ui, |ui| {
+    egui::Frame::NONE.stroke(Stroke::new(1.0, FIELD_BORDER())).corner_radius(rad(5.0)).inner_margin(Margin::same(2)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (i, it) in items.iter().enumerate() {
                 let on = i == sel;
-                let col = if on { BLUE } else { TEXT };
+                let col = if on { BLUE } else { TEXT() };
                 let g = ui.painter().layout_no_wrap(it.to_string(), regular(13.0), col);
                 let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 20.0, 24.0), Sense::click());
                 if on {
-                    ui.painter().rect(r, 4.0, BLUE_SOFT, Stroke::new(1.0, Color32::from_rgb(160, 196, 250)));
+                    ui.painter().rect(r, rad(4.0), BLUE_SOFT(), Stroke::new(1.0, BLUE.gamma_multiply(0.5)), eframe::egui::StrokeKind::Middle);
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(r, 4.0, TRACK);
+                    ui.painter().rect_filled(r, rad(4.0), TRACK());
                 }
                 ui.painter().galley(r.center() - g.size() / 2.0, g, col);
                 if resp.clicked() {
@@ -4794,7 +4950,7 @@ fn segmented(ui: &mut Ui, items: &[&str], sel: usize) -> Option<usize> {
 
 /// Shorten from the left («…\папка\файл») so the end of a path stays visible.
 fn elide_left(p: &egui::Painter, s: &str, font: &egui::FontId, max_w: f32) -> String {
-    let w = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), TEXT).size().x;
+    let w = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), TEXT()).size().x;
     if w(s) <= max_w {
         return s.to_string();
     }
@@ -4818,7 +4974,7 @@ fn elide_right(p: &egui::Painter, s: &str, font: &egui::FontId, max_w: f32) -> S
 }
 
 fn elide_with_suffix(p: &egui::Painter, s: &str, font: &egui::FontId, max_w: f32, suffix: &str) -> String {
-    let w = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), TEXT).size().x;
+    let w = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), TEXT()).size().x;
     if s.is_empty() || w(s) <= max_w {
         return s.to_string();
     }
@@ -4841,7 +4997,7 @@ fn elide_with_suffix(p: &egui::Painter, s: &str, font: &egui::FontId, max_w: f32
 fn kbd(ui: &mut Ui, k: &str) {
     let g = ui.painter().layout_no_wrap(k.to_string(), semibold(12.5), BLUE);
     let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 16.0, 24.0), Sense::hover());
-    ui.painter().rect_filled(r, 6.0, BLUE_SOFT);
+    ui.painter().rect_filled(r, rad(6.0), BLUE_SOFT());
     ui.painter().galley(r.center() - g.size() / 2.0, g, BLUE);
 }
 
@@ -4856,14 +5012,14 @@ fn buttons_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 fn dialog_header(ui: &mut Ui, g: Glyph, color: Color32, title: &str, subtitle: Option<&str>) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
-        ui.painter().rect_filled(r, 12.0, mix(color, Color32::WHITE, 0.86));
+        ui.painter().rect_filled(r, rad(12.0), mix(color, CARD(), 0.86));
         icons::glyph(ui.painter(), r.shrink(11.0), g, color);
         ui.add_space(4.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(title).font(semibold(18.0)).color(TEXT));
+            ui.label(RichText::new(title).font(semibold(18.0)).color(TEXT()));
             if let Some(s) = subtitle {
-                ui.label(RichText::new(s).size(13.0).color(MUTED));
+                ui.label(RichText::new(s).size(13.0).color(MUTED()));
             }
         });
     });
@@ -4905,14 +5061,14 @@ fn kind_look(k: OpKind) -> (Glyph, Color32) {
 fn icon_btn(ui: &mut Ui, g: Glyph, color: Color32, tip: &str) -> Response {
     let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(r, 6.0, INPUT_BG);
+        ui.painter().rect_filled(r, rad(6.0), INPUT_BG());
     }
     icons::glyph(ui.painter(), r.shrink(6.0), g, color);
     resp.on_hover_text(tip)
 }
 
 fn small_btn(ui: &mut Ui, text: &str, fg: Color32) -> Response {
-    sized_btn(ui, text, INPUT_BG, fg, Stroke::NONE)
+    sized_btn(ui, text, INPUT_BG(), fg, Stroke::NONE)
 }
 
 fn progress_text(t: &Task) -> String {
@@ -4931,24 +5087,24 @@ fn queue_row(ui: &mut Ui, t: &Task, first_pending: bool, last_pending: bool, ops
     let (g, color) = kind_look(t.spec.kind());
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::hover());
-        ui.painter().rect_filled(r, 9.0, mix(color, Color32::WHITE, 0.86));
+        ui.painter().rect_filled(r, rad(9.0), mix(color, CARD(), 0.86));
         icons::glyph(ui.painter(), r.shrink(8.0), g, color);
         let buttons_w = 64.0;
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - buttons_w);
             ui.spacing_mut().item_spacing.y = 3.0;
-            ui.add(egui::Label::new(RichText::new(t.title.as_str()).color(TEXT).size(13.5)).truncate());
+            ui.add(egui::Label::new(RichText::new(t.title.as_str()).color(TEXT()).size(13.5)).truncate());
             let (status, col) = match &t.state {
-                State::Pending => (tr!("Ожидает", "Pending").to_string(), MUTED),
+                State::Pending => (tr!("Ожидает", "Pending").to_string(), MUTED()),
                 State::Running(job) => {
                     let (br, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
                     icons::bar(ui.painter(), br, job.fraction(), color);
                     let cur = if job.current.is_empty() { String::new() } else { format!(" · {}", job.current) };
-                    (format!("{}{cur}", progress_text(t)), TEXT_SOFT)
+                    (format!("{}{cur}", progress_text(t)), TEXT_SOFT())
                 }
                 State::Done(m) => (m.clone(), GREEN),
                 State::Failed(e) => (e.clone(), RED),
-                State::Cancelled => (tr!("Отменено", "Cancelled").to_string(), MUTED),
+                State::Cancelled => (tr!("Отменено", "Cancelled").to_string(), MUTED()),
             };
             ui.add(egui::Label::new(RichText::new(status).color(col).size(12.0)).truncate());
         });
@@ -4961,23 +5117,23 @@ fn queue_row(ui: &mut Ui, t: &Task, first_pending: bool, last_pending: bool, ops
                     }
                 }
                 State::Pending => {
-                    if icon_btn(ui, Glyph::Close, TEXT_SOFT, tr!("Убрать из очереди", "Remove from queue")).clicked() {
+                    if icon_btn(ui, Glyph::Close, TEXT_SOFT(), tr!("Убрать из очереди", "Remove from queue")).clicked() {
                         ops.push(QueueOp::Cancel(t.id));
                     }
-                    if !last_pending && icon_btn(ui, Glyph::ChevronDown, TEXT_SOFT, tr!("Позже", "Later")).clicked() {
+                    if !last_pending && icon_btn(ui, Glyph::ChevronDown, TEXT_SOFT(), tr!("Позже", "Later")).clicked() {
                         ops.push(QueueOp::Down(t.id));
                     }
-                    if !first_pending && icon_btn(ui, Glyph::ArrowUp, TEXT_SOFT, tr!("Раньше", "Earlier")).clicked() {
+                    if !first_pending && icon_btn(ui, Glyph::ArrowUp, TEXT_SOFT(), tr!("Раньше", "Earlier")).clicked() {
                         ops.push(QueueOp::Up(t.id));
                     }
                 }
                 State::Done(_) => {
-                    if icon_btn(ui, Glyph::Close, MUTED, tr!("Убрать из списка", "Remove from list")).clicked() {
+                    if icon_btn(ui, Glyph::Close, MUTED(), tr!("Убрать из списка", "Remove from list")).clicked() {
                         ops.push(QueueOp::Remove(t.id));
                     }
                 }
                 State::Failed(_) | State::Cancelled => {
-                    if icon_btn(ui, Glyph::Close, MUTED, tr!("Убрать из списка", "Remove from list")).clicked() {
+                    if icon_btn(ui, Glyph::Close, MUTED(), tr!("Убрать из списка", "Remove from list")).clicked() {
                         ops.push(QueueOp::Remove(t.id));
                     }
                     if icon_btn(ui, Glyph::Refresh, BLUE, tr!("Повторить", "Retry")).clicked() {
@@ -4994,21 +5150,21 @@ fn queue_full(ui: &mut Ui, q: &Queue, ops: &mut Vec<QueueOp>) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            ui.label(RichText::new(tr!("Очередь операций", "Operation queue")).font(semibold(16.0)).color(TEXT));
+            ui.label(RichText::new(tr!("Очередь операций", "Operation queue")).font(semibold(16.0)).color(TEXT()));
             let sub = match (q.running().is_some(), pending, q.paused) {
                 (false, 0, _) => tr!("Нет активных операций", "No active operations").to_string(),
                 (_, n, true) => trf!("Пауза · ожидает: {n}", "Paused · pending: {n}"),
                 (true, 0, _) => tr!("Выполняется 1 операция", "1 operation running").to_string(),
                 (_, n, _) => trf!("Ожидает: {n}", "Pending: {n}"),
             };
-            ui.label(RichText::new(sub).size(12.5).color(MUTED));
+            ui.label(RichText::new(sub).size(12.5).color(MUTED()));
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if icon_btn(ui, Glyph::ChevronDown, TEXT_SOFT, tr!("Свернуть (Ctrl+J)", "Collapse (Ctrl+J)")).clicked() {
+            if icon_btn(ui, Glyph::ChevronDown, TEXT_SOFT(), tr!("Свернуть (Ctrl+J)", "Collapse (Ctrl+J)")).clicked() {
                 ops.push(QueueOp::Close);
             }
             if q.paused || pending > 0 {
-                let (label, fg) = if q.paused { (tr!("Продолжить", "Resume"), BLUE) } else { (tr!("Пауза", "Pause"), TEXT_SOFT) };
+                let (label, fg) = if q.paused { (tr!("Продолжить", "Resume"), BLUE) } else { (tr!("Пауза", "Pause"), TEXT_SOFT()) };
                 if small_btn(ui, label, fg).on_hover_text(tr!("Текущая операция доработает, следующие не начнутся", "The current operation will finish, the next ones won’t start")).clicked() {
                     ops.push(QueueOp::Pause);
                 }
@@ -5018,7 +5174,7 @@ fn queue_full(ui: &mut Ui, q: &Queue, ops: &mut Vec<QueueOp>) {
     ui.add_space(8.0);
     if q.tasks.is_empty() {
         ui.add_space(6.0);
-        ui.label(RichText::new(tr!("Копирование, перемещение, удаление и архивы попадают сюда и выполняются по очереди.", "Copying, moving, deleting and archives go here and run one after another.")).size(12.5).color(MUTED));
+        ui.label(RichText::new(tr!("Копирование, перемещение, удаление и архивы попадают сюда и выполняются по очереди.", "Copying, moving, deleting and archives go here and run one after another.")).size(12.5).color(MUTED()));
         return;
     }
     let pend_ids: Vec<u64> = q.tasks.iter().filter(|t| matches!(t.state, State::Pending)).map(|t| t.id).collect();
@@ -5034,7 +5190,7 @@ fn queue_full(ui: &mut Ui, q: &Queue, ops: &mut Vec<QueueOp>) {
     if q.has_finished() {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if small_btn(ui, tr!("Очистить завершённые", "Clear finished"), TEXT_SOFT).clicked() {
+            if small_btn(ui, tr!("Очистить завершённые", "Clear finished"), TEXT_SOFT()).clicked() {
                 ops.push(QueueOp::ClearFinished);
             }
         });
@@ -5052,7 +5208,7 @@ fn queue_compact(ui: &mut Ui, q: &Queue, ops: &mut Vec<QueueOp>) {
             (0, _) => String::new(),
             (n, _) => trf!("Ещё в очереди: {n}", "Still in queue: {n}"),
         };
-        ui.label(RichText::new(note).size(12.0).color(MUTED));
+        ui.label(RichText::new(note).size(12.0).color(MUTED()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if small_btn(ui, tr!("Вся очередь", "Whole queue"), BLUE).on_hover_text("Ctrl+J").clicked() {
                 ops.push(QueueOp::Open);
@@ -5101,13 +5257,13 @@ fn appear_progress(ctx: &egui::Context, key: Id, duration: f64) -> f32 {
 
 /// Darkened backdrop behind dialogs; fades in when one opens and out when the last one closes.
 fn backdrop(ctx: &egui::Context, open: bool) {
-    let t = ctx.animate_bool_with_time(Id::new("modal-dim-anim"), open, DIM_ANIM);
+    let t = ctx.animate_bool_with_time(Id::unique("modal-dim-anim"), open, DIM_ANIM);
     if t <= 0.0 {
         return;
     }
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let alpha = (ease_out_cubic(t) * 90.0) as u8;
-    egui::Area::new(Id::new("modal-dim"))
+    egui::Area::new(Id::unique("modal-dim"))
         .order(egui::Order::Middle)
         .fixed_pos(screen.min)
         .movable(false)
@@ -5143,8 +5299,8 @@ fn dialog_with<R>(
     corner_close: bool,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    let screen = ctx.screen_rect();
-    let t = appear_progress(ctx, Id::new(("dialog-anim", id)), DIALOG_ANIM);
+    let screen = ctx.content_rect();
+    let t = appear_progress(ctx, Id::unique(("dialog-anim", id)), DIALOG_ANIM);
     // fade finishes a bit earlier than the scale, which settles after a tiny overshoot
     let opacity = ease_out_cubic((t * 1.7).min(1.0));
     let scale = 0.92 + 0.08 * ease_out_back(t);
@@ -5153,21 +5309,21 @@ fn dialog_with<R>(
     let transform = egui::emath::TSTransform::from_translation(c + vec2(0.0, lift))
         * egui::emath::TSTransform::from_scaling(scale)
         * egui::emath::TSTransform::from_translation(-c);
-    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new(id));
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::unique(id));
     ctx.set_transform_layer(layer, transform);
-    egui::Area::new(Id::new(id))
+    egui::Area::new(Id::unique(id))
         .order(egui::Order::Foreground)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
         .movable(false)
         .fade_in(false)
         .show(ctx, |ui| {
             ui.multiply_opacity(opacity);
-            egui::Frame::none()
-                .fill(CARD)
-                .rounding(rounding)
-                .stroke(Stroke::new(1.0, BORDER))
-                .shadow(ctx.style().visuals.window_shadow)
-                .inner_margin(Margin::same(margin))
+            egui::Frame::NONE
+                .fill(CARD())
+                .corner_radius(rad(rounding))
+                .stroke(Stroke::new(1.0, BORDER()))
+                .shadow(ctx.global_style().visuals.window_shadow)
+                .inner_margin(Margin::same(margin as i8))
                 .show(ui, |ui| {
                     ui.set_width(width);
                     let out = add(ui);
@@ -5177,13 +5333,13 @@ fn dialog_with<R>(
                     // close button in the top-right corner, added last so it wins hit-testing over content
                     let frame = ui.min_rect().expand(margin);
                     let r = Rect::from_min_size(pos2(frame.right() - 38.0, frame.top() + 10.0), vec2(28.0, 28.0));
-                    let resp = ui.interact(r, Id::new((id, "dialog-close")), Sense::click()).on_hover_text(tr!("Закрыть (Esc)", "Close (Esc)"));
+                    let resp = ui.interact(r, Id::unique((id, "dialog-close")), Sense::click()).on_hover_text(tr!("Закрыть (Esc)", "Close (Esc)"));
                     if resp.hovered() {
-                        ui.painter().rect_filled(r, 6.0, TRACK);
+                        ui.painter().rect_filled(r, rad(6.0), TRACK());
                     }
-                    icons::glyph(ui.painter(), r.shrink(8.0), Glyph::Close, if resp.hovered() { TEXT } else { TEXT_SOFT });
+                    icons::glyph(ui.painter(), r.shrink(8.0), Glyph::Close, if resp.hovered() { TEXT() } else { TEXT_SOFT() });
                     if resp.clicked() {
-                        ctx.data_mut(|d| d.insert_temp(Id::new(DIALOG_CLOSE), true));
+                        ctx.data_mut(|d| d.insert_temp(Id::unique(DIALOG_CLOSE), true));
                         ctx.request_repaint();
                     }
                     out
@@ -5197,7 +5353,7 @@ const DIALOG_CLOSE: &str = "dialog-close-requested";
 
 /// True once after the user clicked a dialog's close button; it then behaves like Esc.
 fn take_dialog_close(ctx: &egui::Context) -> bool {
-    ctx.data_mut(|d| d.remove_temp::<bool>(Id::new(DIALOG_CLOSE))).unwrap_or(false)
+    ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique(DIALOG_CLOSE))).unwrap_or(false)
 }
 
 // ───────────────────────────── viewer / editor loading ─────────────────────────────
@@ -5352,24 +5508,23 @@ mod row_click_tests {
         fn frame(&mut self, events: Vec<egui::Event>, modifiers: Modifiers) -> Vec<usize> {
             self.time += 0.04;
             let mut opened = Vec::new();
-            let _ = self.ctx.run(egui::RawInput {
+            self.ctx.run_ui(egui::RawInput {
                 time: Some(self.time),
                 screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))),
-                events,
-                modifiers,
+                events: std::iter::once(egui::Event::ModifiersChanged(modifiers)).chain(events).collect(),
                 ..Default::default()
-            }, |ctx| {
+            }, |ui| { let ctx = &ui.ctx().clone();
                 begin_row_clicks(ctx);
-                egui::CentralPanel::default().show(ctx, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     for row in 0..2 {
                         let rect = Rect::from_min_size(pos2(10.0, 10.0 + row as f32 * 40.0), vec2(200.0, 38.0));
-                        let resp = ui.interact(rect, Id::new(("test-row", row)), Sense::click_and_drag());
-                        if row_double_clicked(&resp, Id::new(("test-file", row))) {
+                        let resp = ui.interact(rect, Id::unique(("test-row", row)), Sense::click_and_drag());
+                        if row_double_clicked(&resp, Id::unique(("test-file", row))) {
                             opened.push(row);
                         }
                     }
                 });
-            });
+            }).textures_delta.clear();
             opened
         }
 
@@ -5528,21 +5683,21 @@ mod column_tests {
     #[test]
     fn overflowing_columns_stay_within_table_viewport() {
         let ctx = egui::Context::default();
-        theme::apply(&ctx);
+        theme::apply(&ctx, &theme::Appearance::default());
         let services = Services { fs: Arc::new(quokka_infra::stdfs::StdFs), watcher: None, waker: Waker::noop() };
         let mut panel = Panel::new(std::env::current_dir().unwrap(), false, services);
         panel.wait_loaded();
         let mut widths = config::DEFAULT_COL_WIDTHS;
         let mut layout = config::ColumnLayout { visible: [true; config::COLUMN_COUNT], ..Default::default() };
         for _ in 0..3 {
-            let _ = ctx.run(egui::RawInput {
+            ctx.run_ui(egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 500.0))),
                 ..Default::default()
-            }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            }, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let viewport = Rect::from_min_size(ui.cursor().min, vec2(400.0, 300.0));
                     #[allow(deprecated)]
-                    ui.allocate_ui_at_rect(viewport, |ui| {
+                    ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(viewport), |ui| {
                         let mut out = PaneOut::default();
                         table(ui, &mut panel, true, 0, viewport, &mut widths, &mut layout, &mut out, None);
                         assert!(ui.min_rect().height() <= viewport.height() + 1.0,
@@ -5552,25 +5707,25 @@ mod column_tests {
                     assert_eq!(widths, config::DEFAULT_COL_WIDTHS);
                     assert!(layout.visible.iter().all(|v| *v));
                 });
-            });
+            }).textures_delta.clear();
         }
     }
 
     #[test]
     fn header_ellipsis_fits_width_including_sort_arrow_reservation() {
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        ctx.run_ui(egui::RawInput::default(), |ui| { let ctx = &ui.ctx().clone();
             let p = ctx.debug_painter();
             let font = regular(11.5);
             for text in ["Дата создания", "Extension", "Имя"] {
                 for width in [0.0, 12.0, 35.0, 60.0, 300.0] {
                     let shown = elide_with_suffix(&p, text, &font, width, "...");
-                    let measured = p.layout_no_wrap(shown.clone(), font.clone(), TEXT).size().x;
+                    let measured = p.layout_no_wrap(shown.clone(), font.clone(), TEXT()).size().x;
                     assert!(measured <= width);
                     assert!(shown == text || shown.is_empty() || shown.ends_with("..."));
                 }
             }
-        });
+        }).textures_delta.clear();
     }
 
     #[test]
@@ -5603,7 +5758,7 @@ mod column_tests {
 
     #[test]
     fn column_dragged_to_the_limit_stays_visible() {
-        // Rounding and pane width never alter the enabled column set.
+        // CornerRadius and pane width never alter the enabled column set.
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 30.0));
         let cols = Cols::new(rect, &[170.0, 100.0, 150.0004, 170.0, 170.0, 100.0, 110.0]);
         assert!(cols.kind.is_some() && cols.modified.is_some());

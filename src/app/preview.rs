@@ -94,7 +94,7 @@ impl Preview {
             }
         }
         let mut close = esc || ctx.input(|i| i.key_pressed(Key::F3) || i.key_pressed(Key::F10));
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let name = self.path.file_name().unwrap_or_default().to_string_lossy();
         let width = (screen.width() * 0.85).min(1200.0);
         dialog(ctx, "viewer", width, |ui| {
@@ -139,9 +139,9 @@ impl Preview {
                 } else {
                     native * self.zoom
                 };
-                egui::Frame::none()
-                    .fill(INPUT_BG)
-                    .rounding(8.0)
+                egui::Frame::NONE
+                    .fill(INPUT_BG())
+                    .corner_radius(rad(8.0))
                     .show(ui, |ui| {
                         egui::ScrollArea::both()
                             .id_salt("photo-scroll")
@@ -162,7 +162,7 @@ impl Preview {
                             egui::TextEdit::multiline(&mut value)
                                 .font(mono(13.0))
                                 .desired_width(f32::INFINITY)
-                                .frame(false),
+                                .frame(egui::Frame::NONE),
                         );
                     });
             }
@@ -173,7 +173,7 @@ impl Preview {
                 }
                 ui.label(
                     RichText::new(tr!("F3 / Esc — закрыть", "F3 / Esc — close"))
-                        .color(MUTED)
+                        .color(MUTED())
                         .size(12.5),
                 );
             });

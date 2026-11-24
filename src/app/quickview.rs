@@ -222,11 +222,11 @@ impl QuickView {
         }
 
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 0.0, CARD);
+        p.rect_filled(rect, 0.0, CARD());
         let inner = rect.shrink2(vec2(14.0, 12.0));
         // header: file name and what it is
         let head = Rect::from_min_size(inner.min, vec2(inner.width(), 40.0));
-        p.rect_filled(head, 8.0, HEADER_BG);
+        p.rect_filled(head, rad(8.0), HEADER_BG());
         let title = entry.as_ref().map_or_else(|| tr!("Быстрый просмотр", "Quick view").to_string(), |e| e.name.clone());
         let ready = entry.as_ref().and_then(|e| self.cached(&e.path));
         let info = match (&entry, ready) {
@@ -237,8 +237,8 @@ impl QuickView {
         };
         let name_w = (head.width() - 24.0) * if info.is_empty() { 1.0 } else { 0.62 };
         let shown = elide_right(&p, &title, &semibold(13.0), name_w);
-        p.text(pos2(head.left() + 12.0, head.center().y), Align2::LEFT_CENTER, shown, semibold(13.0), TEXT);
-        p.text(pos2(head.right() - 12.0, head.center().y), Align2::RIGHT_CENTER, &info, regular(11.5), TEXT_SOFT);
+        p.text(pos2(head.left() + 12.0, head.center().y), Align2::LEFT_CENTER, shown, semibold(13.0), TEXT());
+        p.text(pos2(head.right() - 12.0, head.center().y), Align2::RIGHT_CENTER, &info, regular(11.5), TEXT_SOFT());
         // footer: how to leave
         let foot_h = 22.0;
         let foot = Rect::from_min_max(pos2(inner.left(), inner.bottom() - foot_h), inner.max);
@@ -246,14 +246,14 @@ impl QuickView {
         let view = super::hotkeys::menu_key(&Action::View, "F3");
         let hint = trf!("{key} — закрыть быстрый просмотр · {view} — открыть в просмотрщике", "{key} — close quick view · {view} — open in the viewer");
         let hint = elide_right(&p, &hint, &regular(11.5), foot.width());
-        p.text(foot.center(), Align2::CENTER_CENTER, hint, regular(11.5), MUTED);
+        p.text(foot.center(), Align2::CENTER_CENTER, hint, regular(11.5), MUTED());
         let body = Rect::from_min_max(pos2(inner.left(), head.bottom() + 10.0), pos2(inner.right(), foot.top() - 8.0));
         if body.height() < 20.0 {
             return;
         }
 
         let Some(e) = entry else {
-            p.text(body.center(), Align2::CENTER_CENTER, tr!("Нет файла под курсором", "No file under the cursor"), regular(12.5), MUTED);
+            p.text(body.center(), Align2::CENTER_CENTER, tr!("Нет файла под курсором", "No file under the cursor"), regular(12.5), MUTED());
             return;
         };
         if !previewable(&e) {
@@ -267,7 +267,7 @@ impl QuickView {
         };
         match loaded {
             Some(Loaded { shown: Shown::Photo(texture), .. }) => {
-                p.rect_filled(body, 8.0, INPUT_BG);
+                p.rect_filled(body, rad(8.0), INPUT_BG());
                 let native = texture.size_vec2();
                 let scale = (body.width() / native.x).min(body.height() / native.y).min(1.0);
                 let r = Rect::from_center_size(body.center(), native * scale);
@@ -275,11 +275,11 @@ impl QuickView {
                 p.image(texture.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
             }
             Some(Loaded { shown: Shown::Text(text), path, .. }) => {
-                p.rect_filled(body, 8.0, INPUT_BG);
+                p.rect_filled(body, rad(8.0), INPUT_BG());
                 #[allow(deprecated)]
-                ui.allocate_ui_at_rect(body.shrink(10.0), |ui| {
+                ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(body.shrink(10.0)), |ui| {
                     egui::ScrollArea::both().id_salt(("quick-view-text", path)).auto_shrink([false, false]).show(ui, |ui| {
-                        ui.label(RichText::new(text.as_str()).font(mono(12.0)).color(if stale { MUTED } else { TEXT }));
+                        ui.label(RichText::new(text.as_str()).font(mono(12.0)).color(if stale { MUTED() } else { TEXT() }));
                     });
                 });
             }
@@ -320,5 +320,5 @@ fn card(p: &egui::Painter, body: Rect, e: &Entry, file_icons: Option<&mut crate:
     if e.modified.is_some() {
         lines.push(format_time(e.modified));
     }
-    p.text(pos2(c.x, ir.bottom() + 18.0), Align2::CENTER_CENTER, lines.join(" · "), regular(12.0), TEXT_SOFT);
+    p.text(pos2(c.x, ir.bottom() + 18.0), Align2::CENTER_CENTER, lines.join(" · "), regular(12.0), TEXT_SOFT());
 }
