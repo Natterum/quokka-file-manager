@@ -175,7 +175,7 @@ fn paint(ctx: &egui::Context, pos: Pos2, sources: &[PathBuf], target: Option<&Ta
             t.highlight.shrink(1.0),
             rad(8.0),
             Color32::from_rgba_unmultiplied(22, 119, 255, 22),
-            Stroke::new(2.0, BLUE), eframe::egui::StrokeKind::Middle,
+            Stroke::new(2.0, BLUE()), eframe::egui::StrokeKind::Middle,
         );
     }
     if sources.is_empty() {
@@ -199,7 +199,7 @@ fn paint(ctx: &egui::Context, pos: Pos2, sources: &[PathBuf], target: Option<&Ta
     at.y = at.y.min(screen.bottom() - h - 4.0);
     let r = Rect::from_min_size(at, vec2(w, h));
     p.rect(r.translate(vec2(0.0, 2.0)), rad(9.0), Color32::from_black_alpha(18), Stroke::NONE, eframe::egui::StrokeKind::Middle);
-    p.rect(r, rad(9.0), CARD(), Stroke::new(1.0, if ok { BLUE } else { BORDER() }), eframe::egui::StrokeKind::Middle);
+    p.rect(r, rad(9.0), CARD(), Stroke::new(1.0, if ok { BLUE() } else { BORDER() }), eframe::egui::StrokeKind::Middle);
     let y2 = r.top() + 8.0 + g1.size().y + 4.0;
     p.galley(r.min + vec2(12.0, 8.0), g1, TEXT());
     p.galley(pos2(r.left() + 12.0, y2), g2, MUTED());

@@ -98,7 +98,7 @@ impl Preview {
         let name = self.path.file_name().unwrap_or_default().to_string_lossy();
         let width = (screen.width() * 0.85).min(1200.0);
         dialog(ctx, "viewer", width, |ui| {
-            dialog_header(ui, Glyph::Eye, BLUE, &name, Some(&self.info));
+            dialog_header(ui, Glyph::Eye, BLUE(), &name, Some(&self.info));
             if self.loading {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -168,7 +168,7 @@ impl Preview {
             }
             ui.add_space(12.0);
             buttons_row(ui, |ui| {
-                if btn(ui, tr!("Закрыть", "Close"), BLUE, Color32::WHITE).clicked() {
+                if btn(ui, tr!("Закрыть", "Close"), BLUE(), Color32::WHITE).clicked() {
                     close = true;
                 }
                 ui.label(

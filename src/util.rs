@@ -14,7 +14,7 @@ impl KindColor for FileKind {
     fn color(self) -> Color32 {
         match self {
             FileKind::Folder => YELLOW,
-            FileKind::Document => BLUE,
+            FileKind::Document => BLUE(),
             FileKind::Image => TEAL,
             FileKind::Video => PURPLE,
             FileKind::Audio => ORANGE,

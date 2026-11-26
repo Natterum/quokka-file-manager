@@ -303,7 +303,7 @@ impl QuokkaApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Rust · egui · Windows").size(12.5).color(MUTED()));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if btn(ui, tr!("Закрыть", "Close"), BLUE, Color32::WHITE).clicked() {
+                        if btn(ui, tr!("Закрыть", "Close"), BLUE(), Color32::WHITE).clicked() {
                             close = true;
                         }
                     });
@@ -324,7 +324,7 @@ fn hero(ui: &mut Ui, logo: Option<egui::TextureId>) {
     let p = ui.painter().with_clip_rect(r);
     p.rect_filled(r, CornerRadius { nw: rad_u8(FLAT_R as u8), ne: rad_u8(FLAT_R as u8), ..Default::default() }, BLUE_SOFT());
     let soft = |c: Color32, k: f32| mix(c, BLUE_SOFT(), k);
-    p.circle_filled(pos2(r.left() + 40.0, r.top() + 10.0), 90.0, soft(BLUE, 0.88));
+    p.circle_filled(pos2(r.left() + 40.0, r.top() + 10.0), 90.0, soft(BLUE(), 0.88));
     p.circle_filled(pos2(r.right() - 30.0, r.bottom() - 6.0), 110.0, soft(PURPLE, 0.9));
     p.circle_filled(pos2(r.right() - 150.0, r.top() + 26.0), 26.0, soft(TEAL, 0.86));
     p.circle_filled(pos2(r.left() + 150.0, r.bottom() - 24.0), 14.0, soft(ORANGE, 0.8));
@@ -341,14 +341,14 @@ fn hero(ui: &mut Ui, logo: Option<egui::TextureId>) {
 
     let ver = trf!("Версия {}", "Version {}", env!("CARGO_PKG_VERSION"));
     let tag = tr!("Двухпанельный файловый менеджер", "Dual-pane file manager");
-    let vg = p.layout_no_wrap(ver, semibold(12.5), BLUE);
+    let vg = p.layout_no_wrap(ver, semibold(12.5), BLUE());
     let tg = p.layout_no_wrap(tag.into(), regular(13.0), TEXT_SOFT());
     let pill_w = vg.size().x + 20.0;
     let total = pill_w + 10.0 + tg.size().x;
     let y = r.top() + 168.0;
     let pill = Rect::from_min_size(pos2(r.center().x - total / 2.0, y - 11.0), vec2(pill_w, 22.0));
-    p.rect(pill, rad(11.0), CARD(), Stroke::new(1.0, mix(BLUE, CARD(), 0.6)), eframe::egui::StrokeKind::Middle);
-    p.galley(pill.center() - vg.size() / 2.0, vg, BLUE);
+    p.rect(pill, rad(11.0), CARD(), Stroke::new(1.0, mix(BLUE(), CARD(), 0.6)), eframe::egui::StrokeKind::Middle);
+    p.galley(pill.center() - vg.size() / 2.0, vg, BLUE());
     p.galley(pos2(pill.right() + 10.0, y - tg.size().y / 2.0), tg, TEXT_SOFT());
 }
 
@@ -397,7 +397,7 @@ fn release_ui(ui: &mut Ui, rel: &Release) {
 fn section_color(name: &str) -> Color32 {
     match name {
         "Added" => GREEN,
-        "Changed" => BLUE,
+        "Changed" => BLUE(),
         "Fixed" => ORANGE,
         "Removed" => RED,
         _ => SLATE(),

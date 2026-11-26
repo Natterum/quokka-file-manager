@@ -134,15 +134,15 @@ fn insert_token(ctx: &egui::Context, id: Id, text: &mut String, tok: &str) {
 }
 
 fn chip(ui: &mut Ui, tok: &str, label: &str, tip: &str) -> Response {
-    let g_tok = ui.painter().layout_no_wrap(tok.to_string(), mono(12.0), BLUE);
+    let g_tok = ui.painter().layout_no_wrap(tok.to_string(), mono(12.0), BLUE());
     let g_lab = ui.painter().layout_no_wrap(label.to_string(), regular(12.5), TEXT_SOFT());
     let w = g_tok.size().x + g_lab.size().x + 22.0;
     let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
     let p = ui.painter();
-    p.rect(r, rad(13.0), if resp.hovered() { BLUE_SOFT() } else { INPUT_BG() }, Stroke::new(1.0, if resp.hovered() { BLUE } else { BORDER() }), eframe::egui::StrokeKind::Middle);
+    p.rect(r, rad(13.0), if resp.hovered() { BLUE_SOFT() } else { INPUT_BG() }, Stroke::new(1.0, if resp.hovered() { BLUE() } else { BORDER() }), eframe::egui::StrokeKind::Middle);
     let y = r.center().y;
     let x = r.left() + 9.0;
-    p.galley(pos2(x, y - g_tok.size().y / 2.0), g_tok.clone(), BLUE);
+    p.galley(pos2(x, y - g_tok.size().y / 2.0), g_tok.clone(), BLUE());
     p.galley(pos2(x + g_tok.size().x + 5.0, y - g_lab.size().y / 2.0), g_lab, TEXT_SOFT());
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -196,7 +196,7 @@ impl QuokkaApp {
 
         dialog(ctx, "multi-rename", width, |ui| {
             let sub = format!("{} · {}", items_text(d.items.len() as u64), d.folder);
-            dialog_header(ui, Glyph::Pencil, BLUE, tr!("Групповое переименование", "Multi-rename"), Some(&sub));
+            dialog_header(ui, Glyph::Pencil, BLUE(), tr!("Групповое переименование", "Multi-rename"), Some(&sub));
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             let w = ui.available_width();
 
@@ -338,7 +338,7 @@ impl QuokkaApp {
                                     let (fg, font) = match (on, pl.changed, pl.problem) {
                                         (false, _, _) => (MUTED(), regular(13.5)),
                                         (_, true, Some(_)) => (RED, semibold(13.5)),
-                                        (_, true, None) => (BLUE, semibold(13.5)),
+                                        (_, true, None) => (BLUE(), semibold(13.5)),
                                         _ => (MUTED(), regular(13.5)),
                                     };
                                     if pl.changed {
@@ -380,12 +380,12 @@ impl QuokkaApp {
                     (_, c, _) => (trf!("Будет переименовано: {c} из {total}", "Will be renamed: {c} of {total}"), TEXT_SOFT()),
                 };
                 ui.label(RichText::new(text).size(13.0).color(col));
-                if ui.link(RichText::new(tr!("Сбросить", "Reset")).size(13.0).color(BLUE)).clicked() {
+                if ui.link(RichText::new(tr!("Сбросить", "Reset")).size(13.0).color(BLUE())).clicked() {
                     reset = true;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_enabled_ui(can_apply, |ui| {
-                        if btn(ui, tr!("Переименовать", "Rename"), BLUE, Color32::WHITE).on_hover_text(tr!("Enter; отменить потом — Ctrl+Z", "Enter; undo later — Ctrl+Z")).clicked() {
+                        if btn(ui, tr!("Переименовать", "Rename"), BLUE(), Color32::WHITE).on_hover_text(tr!("Enter; отменить потом — Ctrl+Z", "Enter; undo later — Ctrl+Z")).clicked() {
                             apply = true;
                         }
                     });
@@ -442,14 +442,14 @@ impl QuokkaApp {
 fn draw_check(p: &egui::Painter, r: Rect, on: bool, partial: bool) {
     let b = Rect::from_center_size(r.center(), vec2(15.0, 15.0));
     if on {
-        p.rect_filled(b, rad(4.0), BLUE);
+        p.rect_filled(b, rad(4.0), BLUE());
         let c = b.center();
         p.line_segment([c + vec2(-3.8, 0.2), c + vec2(-1.0, 3.0)], Stroke::new(1.8, Color32::WHITE));
         p.line_segment([c + vec2(-1.0, 3.0), c + vec2(4.0, -2.8)], Stroke::new(1.8, Color32::WHITE));
     } else {
         p.rect(b, rad(4.0), CARD(), Stroke::new(1.2, FIELD_BORDER()), eframe::egui::StrokeKind::Middle);
         if partial {
-            p.hline((b.left() + 4.0)..=(b.right() - 4.0), b.center().y, Stroke::new(1.8, BLUE));
+            p.hline((b.left() + 4.0)..=(b.right() - 4.0), b.center().y, Stroke::new(1.8, BLUE()));
         }
     }
 }

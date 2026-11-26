@@ -1,6 +1,6 @@
 [package]
 name = "quokka-infra"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Quokka infrastructure: std::fs and Windows shell adapters for the core ports, ZIP, file search, clipboard, icons."
 

@@ -29,7 +29,7 @@ impl ColumnsDialog {
             let (header, _) = ui.allocate_exact_size(vec2(width, 82.0), Sense::hover());
             let icon = Rect::from_min_size(header.min + vec2(24.0, 21.0), vec2(40.0, 40.0));
             ui.painter().rect_filled(icon, rad(12.0), BLUE_SOFT());
-            icons::glyph(ui.painter(), icon.shrink(10.0), Glyph::Columns, BLUE);
+            icons::glyph(ui.painter(), icon.shrink(10.0), Glyph::Columns, BLUE());
             ui.painter().text(header.min + vec2(78.0, 29.0), Align2::LEFT_CENTER,
                 tr!("Настройка колонок", "Configure columns"), semibold(19.0), TEXT());
             ui.painter().text(header.min + vec2(78.0, 53.0), Align2::LEFT_CENTER,
@@ -48,7 +48,7 @@ impl ColumnsDialog {
                     ui.label(RichText::new(tr!("Колонки", "Columns")).font(semibold(13.5)).color(TEXT()));
                     let count = self.layout.visible.iter().filter(|v| **v).count();
                     egui::Frame::NONE.fill(BLUE_SOFT()).corner_radius(rad(5.0)).inner_margin(Margin::symmetric(7, 2)).show(ui, |ui| {
-                        ui.label(RichText::new(format!("{count} / {COLUMN_COUNT}")).size(10.5).color(BLUE));
+                        ui.label(RichText::new(format!("{count} / {COLUMN_COUNT}")).size(10.5).color(BLUE()));
                     });
                 });
                 ui.label(RichText::new(tr!("Перетащите строки, чтобы изменить порядок", "Drag rows to change the order")).size(11.0).color(MUTED()));
@@ -66,7 +66,7 @@ impl ColumnsDialog {
                 ui.add_space(10.0);
                 egui::Frame::NONE.fill(BLUE_SOFT()).corner_radius(rad(9.0)).inner_margin(Margin::same(12)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(tr!("Настройте под себя", "Make it yours")).font(semibold(11.5)).color(BLUE));
+                    ui.label(RichText::new(tr!("Настройте под себя", "Make it yours")).font(semibold(11.5)).color(BLUE()));
                     ui.add_space(5.0);
                     ui.label(RichText::new(tr!("Флажок включает колонку. Порядок строк сверху вниз задаёт порядок слева направо.", "Check a column to show it. The top-to-bottom order becomes left to right.")).size(11.0).color(TEXT_SOFT()));
                 });
@@ -151,15 +151,15 @@ impl ColumnsDialog {
             let enabled = self.layout.visible[id];
             let p = ui.painter();
             p.rect(row, rad(8.0), if selected { BLUE_SOFT() } else if response.hovered() { HOVER() } else { CARD() },
-                Stroke::new(1.0, if selected { BLUE } else { BORDER() }), eframe::egui::StrokeKind::Middle);
+                Stroke::new(1.0, if selected { BLUE() } else { BORDER() }), eframe::egui::StrokeKind::Middle);
             // Six dots stay crisp with every font and make the drag handle explicit.
             for dx in [-3.0, 3.0] {
                 for dy in [-6.0, 0.0, 6.0] {
-                    p.circle_filled(pos2(row.left() + 16.0 + dx, row.center().y + dy), 1.25, if selected { BLUE } else { MUTED() });
+                    p.circle_filled(pos2(row.left() + 16.0 + dx, row.center().y + dy), 1.25, if selected { BLUE() } else { MUTED() });
                 }
             }
             let tile = Rect::from_center_size(pos2(row.left() + 48.0, row.center().y), vec2(28.0, 28.0));
-            let color = match id { 0 => BLUE, 1 | 4 | 5 => PURPLE, 2 => TEAL, _ => SLATE() };
+            let color = match id { 0 => BLUE(), 1 | 4 | 5 => PURPLE, 2 => TEAL, _ => SLATE() };
             p.rect_filled(tile, rad(7.0), if enabled { mix(color, CARD(), 0.9) } else { INPUT_BG() });
             let glyph = match id { 0 | 6 => Glyph::Document, 2 => Glyph::Drive, 3 => Glyph::Columns, 7 => Glyph::Gear, _ => Glyph::Document };
             let ink = if enabled { color } else { MUTED() };
@@ -185,8 +185,8 @@ impl ColumnsDialog {
             }
             toggle.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, id != 0, self.layout.visible[id], column_label(id)));
             let on = self.layout.visible[id];
-            p.rect(check, rad(5.0), if on { if id == 0 { mix(BLUE, CARD(), 0.55) } else { BLUE } } else { CARD() },
-                Stroke::new(1.0, if on { Color32::TRANSPARENT } else if toggle.hovered() { BLUE } else { FIELD_BORDER() }), eframe::egui::StrokeKind::Middle);
+            p.rect(check, rad(5.0), if on { if id == 0 { mix(BLUE(), CARD(), 0.55) } else { BLUE() } } else { CARD() },
+                Stroke::new(1.0, if on { Color32::TRANSPARENT } else if toggle.hovered() { BLUE() } else { FIELD_BORDER() }), eframe::egui::StrokeKind::Middle);
             if on {
                 p.add(egui::Shape::line(vec![check.center() + vec2(-4.5, 0.0), check.center() + vec2(-1.0, 3.5), check.center() + vec2(5.0, -3.5)], Stroke::new(1.8, CARD())));
             }
@@ -206,12 +206,12 @@ impl ColumnsDialog {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 if let Some(target) = target {
                     let y = if target < COLUMN_COUNT { rects[target].top() - 2.0 } else { bounds.bottom() + 2.0 };
-                    ui.painter().hline(bounds.x_range(), y, Stroke::new(2.5, BLUE));
+                    ui.painter().hline(bounds.x_range(), y, Stroke::new(2.5, BLUE()));
                 }
                 if let Some(pointer) = pointer {
                     let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("column-row-ghost")));
                     let ghost = Rect::from_min_size(pointer + vec2(14.0, 10.0), vec2(210.0, 40.0));
-                    painter.rect(ghost, rad(9.0), CARD(), Stroke::new(1.0, BLUE), eframe::egui::StrokeKind::Middle);
+                    painter.rect(ghost, rad(9.0), CARD(), Stroke::new(1.0, BLUE()), eframe::egui::StrokeKind::Middle);
                     painter.text(ghost.center(), Align2::CENTER_CENTER, column_label(self.layout.order[from]), regular(13.0), TEXT());
                 }
                 // Keep the destination reachable when the dialog is shorter than the list.

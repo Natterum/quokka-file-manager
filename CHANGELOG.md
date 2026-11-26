@@ -4,6 +4,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-26
+
+### Added
+
+- Colour themes: "Settings → Appearance → Theme" is now one drop-down list with light and dark variants of 16 presets — Classic, Graphite, Ocean, Forest, Sunset, Lavender, Rose, and IDE- and web-style looks: Studio, Charcoal, Midnight, Dusk, Glow, Nordic, Solar, Ember and Contrast. A preset sets the accent colour (buttons, links, selection, focus), the background tint and, for the dark variants, how deep the background is; each entry shows a preview swatch.
+- Settings transfer: "Import…" and "Export…" at the bottom of the settings window save all settings to a file and load them on another computer — favourites, columns, hotkeys, appearance, saved server connections and the rest. Open tabs of this computer are kept; saved passwords are not transferred.
+
+### Fixed
+
+- Saved server connections could disappear after an update. If the settings file was briefly locked (for example by an antivirus right after the new version started), Quokka fell back to the defaults and overwrote the file with them. Now the read is retried, a file that cannot be read is never overwritten, settings are written to a temporary file first and the previous version is kept as `settings.bak`, which is used if the main file is missing or empty. Connections saved by another Quokka window are no longer lost when this one saves.
+- Find files (Alt+F7) always starts in the folder of the active pane; previously it could keep the folder of the last search while its results were shown.
+
 ## [0.4.0] — 2026-11-24
 
 ### Added

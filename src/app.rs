@@ -215,7 +215,7 @@ fn fkeys() -> [(Key, &'static str, Action); 12] {
 
 fn fkey_color(i: usize) -> Color32 {
     match i {
-        4 => BLUE,
+        4 => BLUE(),
         5 => GREEN,
         7 => RED,
         9 => ORANGE,
@@ -311,7 +311,7 @@ impl SettingsGroup {
         let words = match self {
             SettingsGroup::Keys => return hotkeys::matches(q),
             SettingsGroup::View => tr!("колонки столбцы состав порядок расположение язык интерфейса english русский вид и файлы скрытые файлы иконки значки связанных приложений окно две панели внешний редактор команда f4 f11 f12 трей область уведомлений значок закрытии скрывать сворачивать несколько окон экземпляров запуск сеанс сессия вкладки восстанавливать", "columns visibility order arrangement interface language english russian view and files hidden files icons associated applications window two panes dual external editor command f4 f11 f12 tray notification area icon close hide minimize multiple windows instances startup session tabs restore"),
-            SettingsGroup::Appearance => tr!("оформление внешний вид шрифт скругление углов радиус тема светлая тёмная темная", "appearance look font typeface rounding corners radius theme light dark"),
+            SettingsGroup::Appearance => tr!("оформление внешний вид шрифт скругление углов радиус тема светлая тёмная темная цвета пресет акцент палитра", "appearance look font typeface rounding corners radius theme light dark colours colors preset accent palette"),
             SettingsGroup::Search => tr!("поиск фильтр по имени регулярные выражения regex регистр букв ctrl+f alt+r", "search filter by name regular expressions regex case sensitive letters ctrl+f alt+r"),
             SettingsGroup::Sidebar => tr!("избранное и меню боковое меню подписи диски закладки порядок восстановить", "favorites and menu sidebar labels drives bookmarks order restore"),
         };
@@ -977,6 +977,40 @@ impl QuokkaApp {
     fn save_settings(&mut self) {
         if let Err(e) = self.settings.save() {
             self.toast(trf!("Не удалось сохранить настройки: {e}", "Failed to save settings: {e}"), true);
+        }
+    }
+
+    /// «Экспорт…» in the settings: write every setting to a file of the user's choice.
+    fn export_settings(&mut self) {
+        let Some(path) = quokka_infra::pick::settings_save(self.hwnd) else { return };
+        match self.settings.export(&path) {
+            Ok(()) => self.toast(trf!("Настройки сохранены в {}", "Settings saved to {}", path.display()), false),
+            Err(e) => self.toast(trf!("Не удалось экспортировать настройки: {e}", "Failed to export settings: {e}"), true),
+        }
+    }
+
+    /// «Импорт…» in the settings: take the settings from a file exported on another
+    /// computer. The open tabs and the update check state of this computer stay;
+    /// the caller applies the theme, hotkeys and language and saves.
+    fn import_settings(&mut self) {
+        let Some(path) = quokka_infra::pick::settings_open(self.hwnd) else { return };
+        match Settings::import(&path) {
+            Ok(mut s) => {
+                s.session = std::mem::take(&mut self.settings.session);
+                s.update_checked_at = self.settings.update_checked_at;
+                let n = s.connections.len();
+                self.settings = s;
+                let msg = if n > 0 {
+                    trf!(
+                        "Настройки загружены. Подключений к серверам: {n} — пароли не переносятся, введите их при первом подключении",
+                        "Settings loaded. Server connections: {n} — passwords are not transferred, enter them on the first connection"
+                    )
+                } else {
+                    tr!("Настройки загружены", "Settings loaded").to_string()
+                };
+                self.toast(msg, false);
+            }
+            Err(e) => self.toast(trf!("Не удалось загрузить настройки: {e}", "Failed to load settings: {e}"), true),
         }
     }
 
@@ -1820,7 +1854,7 @@ impl QuokkaApp {
                         TEXT(),
                     );
                     if on == Some(true) {
-                        painter.circle_filled(pos2(r.right() - 7.0, r.center().y), 3.0, BLUE);
+                        painter.circle_filled(pos2(r.right() - 7.0, r.center().y), 3.0, BLUE());
                     }
                     if resp.clicked() {
                         self.actions.push(a);
@@ -1915,7 +1949,7 @@ impl QuokkaApp {
                             if target != from && target != from + 1 {
                                 let y = if target < n { rects[target].top() - 3.0 } else { rects[n - 1].bottom() + 3.0 };
                                 let (x0, x1) = (rects[0].left() - 2.0, rects[0].left() + w + 2.0);
-                                ui.painter().line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(3.0, BLUE));
+                                ui.painter().line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(3.0, BLUE()));
                             }
                             if let Some(p) = pos {
                                 let layer = egui::LayerId::new(egui::Order::Tooltip, Id::unique("side-ghost"));
@@ -1923,8 +1957,8 @@ impl QuokkaApp {
                                 let place = &self.settings.places[from];
                                 let galley = gp.layout_no_wrap(place.name.clone(), regular(13.5), TEXT());
                                 let gr = Rect::from_min_size(p + vec2(14.0, -16.0), vec2(galley.size().x + 46.0, 32.0));
-                                gp.rect(gr, rad(8.0), CARD(), Stroke::new(1.0, BLUE), eframe::egui::StrokeKind::Middle);
-                                draw_look(&gp, Rect::from_center_size(pos2(gr.left() + 18.0, gr.center().y), vec2(18.0, 18.0)), looks[from], BLUE);
+                                gp.rect(gr, rad(8.0), CARD(), Stroke::new(1.0, BLUE()), eframe::egui::StrokeKind::Middle);
+                                draw_look(&gp, Rect::from_center_size(pos2(gr.left() + 18.0, gr.center().y), vec2(18.0, 18.0)), looks[from], BLUE());
                                 gp.galley(pos2(gr.left() + 34.0, gr.center().y - galley.size().y / 2.0), galley, TEXT());
                             }
                         } else {
@@ -1972,7 +2006,7 @@ impl QuokkaApp {
                                     Align2::RIGHT_BOTTOM,
                                     root_label(&d).trim_end_matches(':'),
                                     semibold(10.0),
-                                    if cur == d { BLUE } else { TEXT_SOFT() },
+                                    if cur == d { BLUE() } else { TEXT_SOFT() },
                                 );
                             }
                             if resp.hovered() {
@@ -2105,7 +2139,7 @@ impl QuokkaApp {
                     regex = !regex;
                 }
                 dialog(ctx, "filter", 540.0_f32.min(ctx.content_rect().width() - 64.0), |ui| {
-                    dialog_header(ui, Glyph::Search, BLUE, tr!("Поиск по имени", "Search by name"), Some(tr!("В текущей папке · Ctrl+F", "In the current folder · Ctrl+F")));
+                    dialog_header(ui, Glyph::Search, BLUE(), tr!("Поиск по имени", "Search by name"), Some(tr!("В текущей папке · Ctrl+F", "In the current folder · Ctrl+F")));
                     let id = self.search_id;
                     let p = self.ap();
                     let (out, _) = jb_field(ui, id, &mut p.filter,
@@ -2133,7 +2167,7 @@ impl QuokkaApp {
                     }
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
-                        if btn(ui, tr!("Готово", "Done"), BLUE, Color32::WHITE).clicked() || enter {
+                        if btn(ui, tr!("Готово", "Done"), BLUE(), Color32::WHITE).clicked() || enter {
                             close = true;
                         }
                         if btn(ui, tr!("Сбросить", "Clear"), INPUT_BG(), TEXT()).clicked() {
@@ -2159,7 +2193,7 @@ impl QuokkaApp {
                 let list_h = (screen.height() - 290.0).max(120.0);
                 let width = 640.0_f32.min(screen.width() - 80.0).max(280.0);
                 dialog(ctx, "help", width, |ui| {
-                    dialog_header(ui, Glyph::Question, BLUE, tr!("Горячие клавиши", "Keyboard shortcuts"), Some(tr!("Quokka полностью управляется с клавиатуры", "Quokka can be fully controlled from the keyboard")));
+                    dialog_header(ui, Glyph::Question, BLUE(), tr!("Горячие клавиши", "Keyboard shortcuts"), Some(tr!("Quokka полностью управляется с клавиатуры", "Quokka can be fully controlled from the keyboard")));
                     // on a small screen the list scrolls instead of running off the window
                     egui::ScrollArea::vertical().id_salt("help-scroll").max_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
                         egui::Grid::new("help-grid").num_columns(4).spacing(vec2(10.0, 7.0)).show(ui, |ui| {
@@ -2202,7 +2236,7 @@ impl QuokkaApp {
                     ui.label(RichText::new(tr!("Мышь: Ctrl+клик / Shift+клик — отметить, протянуть рамку с пустого места или со строки — выделить несколько, щелчок по пустому месту — снять выделение, двойной клик — открыть, правый клик — меню.", "Mouse: Ctrl+click / Shift+click — mark, drag a frame from an empty spot or from a row — select several, click on an empty spot — clear selection, double-click — open, right-click — menu.")).size(12.5).color(MUTED()));
                     ui.add_space(10.0);
                     buttons_row(ui, |ui| {
-                        if btn(ui, tr!("Закрыть", "Close"), BLUE, Color32::WHITE).clicked() {
+                        if btn(ui, tr!("Закрыть", "Close"), BLUE(), Color32::WHITE).clicked() {
                             close = true;
                         }
                         if btn(ui, tr!("Изменить сочетания…", "Change shortcuts…"), INPUT_BG(), TEXT()).clicked() {
@@ -2251,6 +2285,8 @@ impl QuokkaApp {
                 let mut reset = false;
                 let mut edit_columns = None;
                 let mut check_now = false;
+                // Some(true) — import from a file, Some(false) — export to one
+                let mut transfer: Option<bool> = None;
                 let looks: Vec<Look> = self.settings.places.clone().iter().map(|pl| place_look(&mut self.icon_cache, ctx, pl)).collect();
                 let screen = ctx.content_rect();
                 let width = 920.0_f32.min(screen.width() - 60.0);
@@ -2438,7 +2474,7 @@ impl QuokkaApp {
                                         });
                                         jb_comment(ui, 0.0, tr!("Порядок можно менять и перетаскиванием прямо в боковом меню. Двойной щелчок — изменить.", "The order can also be changed by dragging right in the sidebar. Double-click — edit."));
                                         ui.add_space(4.0);
-                                        if ui.link(RichText::new(tr!("Восстановить избранное по умолчанию", "Restore default favorites")).size(13.0).color(BLUE)).clicked() {
+                                        if ui.link(RichText::new(tr!("Восстановить избранное по умолчанию", "Restore default favorites")).size(13.0).color(BLUE())).clicked() {
                                             reset = true;
                                         }
                                     }
@@ -2454,8 +2490,22 @@ impl QuokkaApp {
                         ui.add_space(26.0);
                         ui.label(RichText::new(tr!("Изменения применяются и сохраняются сразу", "Changes are applied and saved immediately")).size(12.5).color(MUTED()));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            // one even gap between all footer buttons
+                            ui.spacing_mut().item_spacing.x = 10.0;
                             if jb_btn(ui, tr!("Готово", "Done"), true).clicked() {
                                 close = true;
+                            }
+                            if jb_btn(ui, tr!("Экспорт…", "Export…"), false)
+                                .on_hover_text(tr!("Сохранить все настройки в файл, чтобы перенести их на другой компьютер", "Save all settings to a file to move them to another computer"))
+                                .clicked()
+                            {
+                                transfer = Some(false);
+                            }
+                            if jb_btn(ui, tr!("Импорт…", "Import…"), false)
+                                .on_hover_text(tr!("Загрузить настройки из файла, сохранённого на другом компьютере", "Load settings from a file saved on another computer"))
+                                .clicked()
+                            {
+                                transfer = Some(true);
                             }
                         });
                     });
@@ -2465,6 +2515,11 @@ impl QuokkaApp {
                     hk = hotkeys::EditState::default();
                 }
                 ctx.data_mut(|d| d.insert_temp(hk_id, hk));
+                match transfer {
+                    Some(true) => self.import_settings(),
+                    Some(false) => self.export_settings(),
+                    None => {}
+                }
                 if self.settings.hotkeys != before.hotkeys {
                     hotkeys::install(hotkeys::Keymap::with_overrides(&self.settings.hotkeys));
                 }
@@ -2593,7 +2648,7 @@ impl QuokkaApp {
                                             }
                                         }
                                         if on {
-                                            p.circle_stroke(r.center(), 13.5, Stroke::new(2.0, BLUE));
+                                            p.circle_stroke(r.center(), 13.5, Stroke::new(2.0, BLUE()));
                                         } else if resp.hovered() {
                                             p.circle_stroke(r.center(), 13.5, Stroke::new(1.5, BORDER()));
                                         }
@@ -2677,7 +2732,7 @@ impl QuokkaApp {
                     }
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
-                        if btn(ui, tr!("Сохранить", "Save"), BLUE, Color32::WHITE).clicked() {
+                        if btn(ui, tr!("Сохранить", "Save"), BLUE(), Color32::WHITE).clicked() {
                             submit = true;
                         }
                         if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
@@ -2717,11 +2772,11 @@ impl QuokkaApp {
                 let mut submit = false;
                 let mut cancel = esc;
                 let (glyph, color) = match kind {
-                    InputKind::Selection(_) => (Glyph::Check, BLUE),
+                    InputKind::Selection(_) => (Glyph::Check, BLUE()),
                     InputKind::Zip(_) => (Glyph::Archive, ORANGE),
-                    InputKind::Rename(_) => (Glyph::Pencil, BLUE),
+                    InputKind::Rename(_) => (Glyph::Pencil, BLUE()),
                     InputKind::MkDir => (Glyph::FolderPlus, GREEN),
-                    InputKind::NewFile => (Glyph::Plus, BLUE),
+                    InputKind::NewFile => (Glyph::Plus, BLUE()),
                 };
                 dialog(ctx, "input", 440.0, |ui| {
                     dialog_header(ui, glyph, color, title, Some(label));
@@ -2758,7 +2813,7 @@ impl QuokkaApp {
                     }
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
-                        if btn(ui, tr!("ОК", "OK"), BLUE, Color32::WHITE).clicked() {
+                        if btn(ui, tr!("ОК", "OK"), BLUE(), Color32::WHITE).clicked() {
                             submit = true;
                         }
                         if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
@@ -2787,7 +2842,7 @@ impl QuokkaApp {
                     items_text(sources.len() as u64)
                 };
                 let extracting = sources.iter().any(|s| quokka_infra::archive::is_member(s));
-                let (title, glyph, color) = if extracting { (tr!("Извлечь", "Extract"), Glyph::Unpack, BLUE) } else if *mv { (tr!("Переместить", "Move"), Glyph::ArrowRight, GREEN) } else { (tr!("Копировать", "Copy"), Glyph::Copy, BLUE) };
+                let (title, glyph, color) = if extracting { (tr!("Извлечь", "Extract"), Glyph::Unpack, BLUE()) } else if *mv { (tr!("Переместить", "Move"), Glyph::ArrowRight, GREEN) } else { (tr!("Копировать", "Copy"), Glyph::Copy, BLUE()) };
                 dialog(ctx, "transfer", 520.0, |ui| {
                     dialog_header(ui, glyph, color, &format!("{title} {what}"), Some(tr!("Папка назначения", "Destination folder")));
                     let r = ui.add(egui::TextEdit::singleline(dest).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)).font(regular(15.0)));
@@ -2895,7 +2950,7 @@ impl QuokkaApp {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let sub = if dirty { tr!("Изменён — Ctrl+S, чтобы сохранить", "Modified — Ctrl+S to save").to_string() } else { remote::shown(path) };
                 dialog(ctx, "editor", (screen.width() * 0.8).min(1200.0), |ui| {
-                    dialog_header(ui, Glyph::Pencil, if dirty { ORANGE } else { BLUE }, &name, Some(&sub));
+                    dialog_header(ui, Glyph::Pencil, if dirty { ORANGE } else { BLUE() }, &name, Some(&sub));
                     egui::Frame::NONE.fill(INPUT_BG()).corner_radius(rad(10.0)).inner_margin(Margin::same(10)).show(ui, |ui| {
                         egui::ScrollArea::both().max_height(screen.height() * 0.6).auto_shrink([false, false]).show(ui, |ui| {
                             ui.add(
@@ -2911,7 +2966,7 @@ impl QuokkaApp {
                     ui.add_space(12.0);
                     buttons_row(ui, |ui| {
                         if *confirm_close {
-                            if btn(ui, tr!("Сохранить и закрыть", "Save and close"), BLUE, Color32::WHITE).clicked() {
+                            if btn(ui, tr!("Сохранить и закрыть", "Save and close"), BLUE(), Color32::WHITE).clicked() {
                                 save = true;
                                 discard = true;
                             }
@@ -2927,7 +2982,7 @@ impl QuokkaApp {
                             if btn(ui, tr!("Закрыть", "Close"), INPUT_BG(), TEXT()).clicked() {
                                 close = true;
                             }
-                            if btn(ui, tr!("Сохранить", "Save"), BLUE, Color32::WHITE).clicked() {
+                            if btn(ui, tr!("Сохранить", "Save"), BLUE(), Color32::WHITE).clicked() {
                                 save = true;
                             }
                         }
@@ -3050,7 +3105,7 @@ impl QuokkaApp {
                     ui.label(RichText::new(text.as_str()).color(TEXT()));
                     ui.add_space(14.0);
                     buttons_row(ui, |ui| {
-                        if btn(ui, tr!("ОК", "OK"), BLUE, Color32::WHITE).clicked() {
+                        if btn(ui, tr!("ОК", "OK"), BLUE(), Color32::WHITE).clicked() {
                             close = true;
                         }
                     });
@@ -3593,7 +3648,7 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
 
     let crumb_r = Rect::from_min_max(pos2(x, cy - 18.0), pos2(rr.left() - 8.0, cy + 18.0));
     let editing = panel.editing_path.is_some();
-    p.rect(crumb_r, rad(8.0), CARD(), Stroke::new(if editing { 1.5 } else { 1.0 }, if editing { BLUE } else { BORDER() }), eframe::egui::StrokeKind::Middle);
+    p.rect(crumb_r, rad(8.0), CARD(), Stroke::new(if editing { 1.5 } else { 1.0 }, if editing { BLUE() } else { BORDER() }), eframe::egui::StrokeKind::Middle);
 
     if let Some(text) = panel.editing_path.as_mut() {
         let tr = crumb_r.shrink2(vec2(12.0, 6.0));
@@ -3647,7 +3702,7 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
     while start + 1 < segs.len() && total(start) > avail {
         start += 1;
     }
-    icons::glyph(&p, Rect::from_center_size(pos2(crumb_r.left() + 20.0, cy), vec2(20.0, 20.0)), Glyph::Desktop, BLUE);
+    icons::glyph(&p, Rect::from_center_size(pos2(crumb_r.left() + 20.0, cy), vec2(20.0, 20.0)), Glyph::Desktop, BLUE());
     let clip = crumb_r.shrink2(vec2(4.0, 0.0));
     let pc = p.with_clip_rect(Rect::from_min_max(clip.min, pos2(crumb_r.right() - 34.0, clip.max.y)));
     let mut sx = crumb_r.left() + icon_w + 8.0;
@@ -3662,7 +3717,7 @@ fn toolbar(ui: &mut Ui, panel: &mut Panel, idx: usize, rect: Rect, out: &mut Pan
         if resp.hovered() {
             pc.rect_filled(gr, rad(6.0), HOVER());
         }
-        let color = if i == last { TEXT() } else if resp.hovered() { BLUE } else { TEXT_SOFT() };
+        let color = if i == last { TEXT() } else if resp.hovered() { BLUE() } else { TEXT_SOFT() };
         pc.galley(pos2(sx, cy - g.size().y / 2.0), g.clone(), color);
         if resp.clicked() && i != last {
             out.actions.push(Action::GoTo(path.clone()));
@@ -3800,10 +3855,10 @@ fn menu_item_icon(ui: &mut Ui, icon: Option<Glyph>, text: &str, shortcut: &str, 
             };
             p.rect_filled(rect, rad(4.0), fill.gamma_multiply(t));
         }
-        let col = if enabled && resp.hovered() && !danger { BLUE } else { text_col };
+        let col = if enabled && resp.hovered() && !danger { BLUE() } else { text_col };
         if let Some(g) = icon {
             let ic = Rect::from_center_size(pos2(rect.left() + MENU_ICON_X + 8.0, rect.center().y), vec2(16.0, 16.0));
-            let icol = if !enabled { GRAY } else if danger { RED } else if resp.hovered() { BLUE } else { TEXT_SOFT() };
+            let icol = if !enabled { GRAY } else if danger { RED } else if resp.hovered() { BLUE() } else { TEXT_SOFT() };
             icons::glyph(p, ic, g, icol);
         }
         let ty = rect.center().y - galley.size().y / 2.0;
@@ -3922,7 +3977,7 @@ fn drive_kind_name(kind: DriveKind) -> &'static str {
 
 /// Colour of a drive usage bar: blue, orange from 85 %, red from 95 % (as Explorer).
 fn usage_color(frac: f32) -> Color32 {
-    if frac >= 0.95 { RED } else if frac >= 0.85 { ORANGE } else { BLUE }
+    if frac >= 0.95 { RED } else if frac >= 0.85 { ORANGE } else { BLUE() }
 }
 
 /// Tooltip of a drive: name, a usage bar and used / free / total.
@@ -3942,13 +3997,13 @@ fn drive_tooltip(ui: &mut Ui, title: &str, info: Option<&DriveInfo>) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(format_size(used)).font(semibold(12.0)).color(RED)).on_hover_text(tr!("Занято", "Used"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format_size(free)).font(semibold(12.0)).color(BLUE)).on_hover_text(tr!("Свободно", "Free"));
+            ui.label(RichText::new(format_size(free)).font(semibold(12.0)).color(BLUE())).on_hover_text(tr!("Свободно", "Free"));
         });
     });
     let (r, _) = ui.allocate_exact_size(vec2(W, 8.0), Sense::hover());
     let p = ui.painter();
     let round = rad(r.height() / 2.0);
-    p.rect_filled(r, round, BLUE);
+    p.rect_filled(r, round, BLUE());
     if frac > 0.0 {
         let split = r.left() + (r.width() * frac).max(round);
         let used_r = Rect::from_min_max(r.min, pos2(split.min(r.right()), r.bottom()));
@@ -4127,15 +4182,15 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
         let resp = ui.interact(cr, Id::unique(("head", idx, k)), Sense::click());
         if k > 0 {
             let col = id.checked_sub(1);
-            let (h, c) = if col.is_some_and(grip_hot) { (13.0, BLUE) } else { (9.0, BORDER()) };
-            p.line_segment([pos2(x0, head.center().y - h), pos2(x0, head.center().y + h)], Stroke::new(if c == BLUE { 2.0 } else { 1.0 }, c));
+            let (h, c) = if col.is_some_and(grip_hot) { (13.0, BLUE()) } else { (9.0, BORDER()) };
+            p.line_segment([pos2(x0, head.center().y - h), pos2(x0, head.center().y + h)], Stroke::new(if c == BLUE() { 2.0 } else { 1.0 }, c));
         }
         let tx = if k == 0 { x0 + 11.0 } else { x0 + 12.0 };
         let hp = p.with_clip_rect(p.clip_rect().intersect(Rect::from_min_max(pos2(x0, head.top()), pos2(x1, head.bottom()))));
         let sorted = panel.sort == key;
         let available = (x1 - tx - 8.0 - if sorted { 18.0 } else { 0.0 }).max(0.0);
         let shown = elide_with_suffix(&hp, label, &regular(11.5), available, "...");
-        hp.text(pos2(tx, head.center().y), Align2::LEFT_CENTER, &shown, regular(11.5), if resp.hovered() { BLUE } else { TEXT_SOFT() });
+        hp.text(pos2(tx, head.center().y), Align2::LEFT_CENTER, &shown, regular(11.5), if resp.hovered() { BLUE() } else { TEXT_SOFT() });
         if shown != label { resp.clone().on_hover_text(label); }
         if sorted {
             sort_arrow(&hp, pos2(x1 - 12.0, head.center().y), panel.asc);
@@ -4261,9 +4316,9 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                     });
                     if let Some(age) = open_age {
                         let pulse = (1.0 - age / OPEN_FEEDBACK_SECS as f32).powi(2);
-                        pr.rect_filled(bg, rad(6.0), BLUE.gamma_multiply(0.16 * pulse));
+                        pr.rect_filled(bg, rad(6.0), BLUE().gamma_multiply(0.16 * pulse));
                         let stripe = Rect::from_min_size(bg.min + vec2(2.0, 4.0), vec2(3.0, bg.height() - 8.0));
-                        pr.rect_filled(stripe, rad(2.0), BLUE.gamma_multiply(open_fade));
+                        pr.rect_filled(stripe, rad(2.0), BLUE().gamma_multiply(open_fade));
                     }
                     if !is_cur {
                         pr.line_segment(
@@ -4298,10 +4353,10 @@ fn table_content(ui: &mut Ui, panel: &mut Panel, active: bool, idx: usize, rect:
                             let angle = age * 8.0 + step as f32 / 20.0 * std::f32::consts::PI * 1.5;
                             center + vec2(angle.cos(), angle.sin()) * radius
                         }).collect();
-                        status.add(egui::Shape::line(points, Stroke::new(1.7, BLUE.gamma_multiply(open_fade))));
+                        status.add(egui::Shape::line(points, Stroke::new(1.7, BLUE().gamma_multiply(open_fade))));
                         if show_open_status {
                             status.text(pos2(center.x + 11.0, cy), Align2::LEFT_CENTER,
-                                tr!("Открывается…", "Opening…"), regular(11.0), BLUE.gamma_multiply(open_fade));
+                                tr!("Открывается…", "Opening…"), regular(11.0), BLUE().gamma_multiply(open_fade));
                         }
                     }
                     let name_color = if is_marked {
@@ -4517,7 +4572,7 @@ fn footer(ui: &mut Ui, panel: &Panel, rect: Rect) {
             p.line_segment([pos2(rx, cy - 9.0), pos2(rx, cy + 9.0)], Stroke::new(1.0, BORDER()));
             let used = 1.0 - free as f32 / total.max(1) as f32;
             let br = Rect::from_min_size(pos2(rx - 12.0 - 60.0, cy - 3.0), vec2(60.0, 6.0));
-            icons::bar(&p, br, used, if used > 0.9 { RED } else { BLUE });
+            icons::bar(&p, br, used, if used > 0.9 { RED } else { BLUE() });
             p.text(pos2(br.left() - 8.0, cy), Align2::RIGHT_CENTER, trf!("Свободно {}", "{} free", format_size(free)), regular(14.0), TEXT_SOFT());
         }
     }
@@ -4538,7 +4593,7 @@ fn side_btn(ui: &mut Ui, look: Look, active: bool, label: Option<&str>, width: f
     } else if resp.hovered() {
         p.rect_filled(r, rad(10.0), HOVER());
     }
-    let color = if active { BLUE } else { SLATE() };
+    let color = if active { BLUE() } else { SLATE() };
     match label {
         Some(text) => {
             let ir = Rect::from_center_size(pos2(r.left() + 20.0, r.center().y), vec2(22.0, 22.0));
@@ -4548,7 +4603,7 @@ fn side_btn(ui: &mut Ui, look: Look, active: bool, label: Option<&str>, width: f
                 Align2::LEFT_CENTER,
                 text,
                 if active { semibold(14.0) } else { regular(14.0) },
-                if active { BLUE } else { TEXT() },
+                if active { BLUE() } else { TEXT() },
             );
         }
         None => draw_look(p, r.shrink(11.0), look, color),
@@ -4568,11 +4623,11 @@ fn icon_picker(ui: &mut Ui, current: &mut Glyph, tint: Option<Color32>, selected
                 let on = selected && *current == *g;
                 let p = ui.painter();
                 if on {
-                    p.rect(r, rad(8.0), CARD(), Stroke::new(1.5, BLUE), eframe::egui::StrokeKind::Middle);
+                    p.rect(r, rad(8.0), CARD(), Stroke::new(1.5, BLUE()), eframe::egui::StrokeKind::Middle);
                 } else if resp.hovered() {
                     p.rect_filled(r, rad(8.0), CARD());
                 }
-                icons::glyph(p, r.shrink(8.0), *g, tint.unwrap_or(if on { BLUE } else { SLATE() }));
+                icons::glyph(p, r.shrink(8.0), *g, tint.unwrap_or(if on { BLUE() } else { SLATE() }));
                 if resp.clicked() {
                     *current = *g;
                     clicked = true;
@@ -4610,7 +4665,7 @@ fn resource_grid(ui: &mut Ui, cache: &mut IconCache, ctx: &egui::Context, ed: &m
                 let on = chosen.as_ref().is_some_and(|(f, n)| *n == i as i32 && f == &ed.lib);
                 let p = ui.painter();
                 if on {
-                    p.rect(r, rad(8.0), CARD(), Stroke::new(1.5, BLUE), eframe::egui::StrokeKind::Middle);
+                    p.rect(r, rad(8.0), CARD(), Stroke::new(1.5, BLUE()), eframe::egui::StrokeKind::Middle);
                 } else if resp.hovered() {
                     p.rect_filled(r, rad(8.0), CARD());
                 }
@@ -4640,7 +4695,7 @@ fn resource_grid(ui: &mut Ui, cache: &mut IconCache, ctx: &egui::Context, ed: &m
 
 /// Small rounded toggle button.
 fn pill(ui: &mut Ui, text: &str, on: bool) -> Response {
-    let (fill, fg, stroke) = if on { (BLUE_SOFT(), BLUE, Stroke::new(1.0, BLUE)) } else { (INPUT_BG(), TEXT(), Stroke::new(1.0, BORDER())) };
+    let (fill, fg, stroke) = if on { (BLUE_SOFT(), BLUE(), Stroke::new(1.0, BLUE())) } else { (INPUT_BG(), TEXT(), Stroke::new(1.0, BORDER())) };
     let pad = ui.spacing().button_padding;
     paint_btn(ui, text, regular(13.5), fill, fg, stroke, rad(16.0), vec2(0.0, 30.0), pad)
 }
@@ -4675,7 +4730,7 @@ fn settings_nav(ui: &mut Ui, group: &mut SettingsGroup, visible: &[SettingsGroup
         } else if resp.hovered() {
             p.rect_filled(r, rad(5.0), TRACK());
         }
-        icons::glyph(p, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(16.0, 16.0)), glyph, if on { BLUE } else { SLATE() });
+        icons::glyph(p, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(16.0, 16.0)), glyph, if on { BLUE() } else { SLATE() });
         p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, name, regular(13.5), TEXT());
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
         if resp.clicked() {
@@ -4720,14 +4775,67 @@ fn appearance_page(ui: &mut Ui, look: &mut theme::Appearance) {
 
     jb_group(ui, tr!("Тема", "Theme"));
     ui.horizontal(|ui| {
-        for (mode, name) in [(theme::ThemeMode::Light, tr!("Светлая", "Light")), (theme::ThemeMode::Dark, tr!("Тёмная", "Dark"))] {
-            ui.radio_value(&mut look.theme, mode, RichText::new(name).size(13.5).color(TEXT()));
-            ui.add_space(12.0);
-        }
+        ui.label(RichText::new(tr!("Тема оформления:", "Colour theme:")).size(13.5).color(TEXT()));
+        ui.add_space(8.0);
+        let dark = look.theme == theme::ThemeMode::Dark;
+        egui::ComboBox::from_id_salt("settings-theme")
+            .selected_text(theme_name(dark, look.preset()))
+            .width(240.0)
+            .height(560.0)
+            .show_ui(ui, |ui| {
+                for (dark, title) in [(false, tr!("Светлые", "Light")), (true, tr!("Тёмные", "Dark"))] {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(title).font(semibold(12.0)).color(MUTED()));
+                    for preset in theme::ColorPreset::ALL {
+                        let on = (look.theme == theme::ThemeMode::Dark) == dark && look.preset() == preset;
+                        if theme_item(ui, dark, preset, on).clicked() {
+                            if dark {
+                                look.theme = theme::ThemeMode::Dark;
+                                look.dark_preset = preset;
+                            } else {
+                                look.theme = theme::ThemeMode::Light;
+                                look.light_preset = preset;
+                            }
+                        }
+                    }
+                }
+            });
+        let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+        theme_swatch(ui.painter(), r, dark, look.preset());
     });
     ui.spacing_mut().item_spacing.y = 2.0;
-    jb_comment(ui, 0.0, tr!("Применяется сразу ко всем окнам Quokka.", "Applied immediately to all Quokka windows."));
+    jb_comment(ui, 0.0, tr!("Светлый или тёмный вариант с акцентным цветом и оттенком фона. Применяется сразу ко всем окнам Quokka.", "A light or dark variant with its accent colour and background tint. Applied immediately to all Quokka windows."));
     ui.spacing_mut().item_spacing.y = 6.0;
+}
+
+/// «Светлая · Океан» — name of a theme in the theme list.
+fn theme_name(dark: bool, preset: theme::ColorPreset) -> String {
+    let mode = if dark { tr!("Тёмная", "Dark") } else { tr!("Светлая", "Light") };
+    format!("{mode} · {}", preset.name())
+}
+
+/// Small preview of a theme: its background with the accent dot.
+fn theme_swatch(p: &egui::Painter, r: Rect, dark: bool, preset: theme::ColorPreset) {
+    let accent = preset.accent(dark);
+    let base = preset.background(dark);
+    p.rect(r, rad(5.0), base, Stroke::new(1.0, mix(base, accent, 0.45)), egui::StrokeKind::Inside);
+    p.circle_filled(r.center(), r.width() * 0.25, accent);
+}
+
+/// One row of the theme list: swatch and name, highlighted when chosen.
+fn theme_item(ui: &mut Ui, dark: bool, preset: theme::ColorPreset, on: bool) -> Response {
+    let name = theme_name(dark, preset);
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(220.0), 28.0), Sense::click());
+    let p = ui.painter();
+    if on {
+        p.rect_filled(r, rad(6.0), SEL_ACTIVE());
+    } else if resp.hovered() {
+        p.rect_filled(r, rad(6.0), HOVER());
+    }
+    theme_swatch(p, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(18.0, 18.0)), dark, preset);
+    p.text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, &name, regular(13.5), TEXT());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, on, &name));
+    resp
 }
 
 /// Lay out `add` inside an area the caller has already allocated. Unlike `allocate_new_ui`
@@ -4777,7 +4885,7 @@ fn jb_option(ui: &mut Ui, value: &mut bool, label: &str, hint: &str, query: &str
 /// Compact dialog button: blue primary or bordered secondary.
 fn jb_btn(ui: &mut Ui, text: &str, primary: bool) -> Response {
     let (fill, fg, stroke) = if primary {
-        (BLUE, Color32::WHITE, Stroke::NONE)
+        (BLUE(), Color32::WHITE, Stroke::NONE)
     } else {
         (CARD(), TEXT(), Stroke::new(1.0, FIELD_BORDER()))
     };
@@ -4808,7 +4916,7 @@ fn paint_btn(ui: &mut Ui, text: &str, font: egui::FontId, fill: Color32, fg: Col
             p.rect_filled(r, radius, tint.gamma_multiply(t));
         }
         if resp.has_focus() {
-            p.rect_stroke(r.expand(2.0), radius + 2.0, Stroke::new(1.5, BLUE), eframe::egui::StrokeKind::Inside);
+            p.rect_stroke(r.expand(2.0), radius + 2.0, Stroke::new(1.5, BLUE()), eframe::egui::StrokeKind::Inside);
         }
         p.galley(r.center() - galley.size() / 2.0, galley, fg);
     }
@@ -4828,12 +4936,12 @@ fn jb_tool(ui: &mut Ui, g: Glyph, enabled: bool, tip: &str) -> Response {
 /// Option toggle that lives inside a search field («Aa», «W», «.*»).
 fn field_toggle(ui: &mut Ui, label: &str, on: bool, tip: &str) -> Response {
     let font = if label == ".*" { mono(13.0) } else { semibold(12.0) };
-    let col = if on { BLUE } else { TEXT_SOFT() };
+    let col = if on { BLUE() } else { TEXT_SOFT() };
     let g = ui.painter().layout_no_wrap(label.to_string(), font, col);
     let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 10.0).max(24.0), 22.0), Sense::click());
     let p = ui.painter();
     if on {
-        p.rect(r, rad(4.0), BLUE_SOFT(), Stroke::new(1.0, BLUE), eframe::egui::StrokeKind::Middle);
+        p.rect(r, rad(4.0), BLUE_SOFT(), Stroke::new(1.0, BLUE()), eframe::egui::StrokeKind::Middle);
     } else if resp.hovered() {
         p.rect_filled(r, rad(4.0), TRACK());
     }
@@ -4860,7 +4968,7 @@ fn jb_field(
     let enabled = ui.is_enabled();
     let out = egui::Frame::NONE
         .fill(CARD())
-        .stroke(if focused { Stroke::new(1.5, BLUE) } else { Stroke::new(1.0, FIELD_BORDER()) })
+        .stroke(if focused { Stroke::new(1.5, BLUE()) } else { Stroke::new(1.0, FIELD_BORDER()) })
         .corner_radius(rad(5.0))
         .inner_margin(Margin { left: 8, right: 6, top: 3, bottom: 3 })
         .show(ui, |ui| {
@@ -4874,7 +4982,7 @@ fn jb_field(
                     ui.painter().rect_filled(r, rad(4.0), TRACK());
                 }
                 let gr = Rect::from_center_size(pos2(r.left() + 11.0, r.center().y), vec2(15.0, 15.0));
-                icons::glyph(ui.painter(), gr, glyph, if focused { BLUE } else { SLATE() });
+                icons::glyph(ui.painter(), gr, glyph, if focused { BLUE() } else { SLATE() });
                 if has_hist {
                     let cr = Rect::from_center_size(pos2(r.right() - 6.0, r.center().y + 1.0), vec2(9.0, 9.0));
                     icons::glyph(ui.painter(), cr, Glyph::ChevronDown, SLATE());
@@ -4930,11 +5038,11 @@ fn segmented(ui: &mut Ui, items: &[&str], sel: usize) -> Option<usize> {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (i, it) in items.iter().enumerate() {
                 let on = i == sel;
-                let col = if on { BLUE } else { TEXT() };
+                let col = if on { BLUE() } else { TEXT() };
                 let g = ui.painter().layout_no_wrap(it.to_string(), regular(13.0), col);
                 let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 20.0, 24.0), Sense::click());
                 if on {
-                    ui.painter().rect(r, rad(4.0), BLUE_SOFT(), Stroke::new(1.0, BLUE.gamma_multiply(0.5)), eframe::egui::StrokeKind::Middle);
+                    ui.painter().rect(r, rad(4.0), BLUE_SOFT(), Stroke::new(1.0, BLUE().gamma_multiply(0.5)), eframe::egui::StrokeKind::Middle);
                 } else if resp.hovered() {
                     ui.painter().rect_filled(r, rad(4.0), TRACK());
                 }
@@ -4995,10 +5103,10 @@ fn elide_with_suffix(p: &egui::Painter, s: &str, font: &egui::FontId, max_w: f32
 }
 
 fn kbd(ui: &mut Ui, k: &str) {
-    let g = ui.painter().layout_no_wrap(k.to_string(), semibold(12.5), BLUE);
+    let g = ui.painter().layout_no_wrap(k.to_string(), semibold(12.5), BLUE());
     let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 16.0, 24.0), Sense::hover());
     ui.painter().rect_filled(r, rad(6.0), BLUE_SOFT());
-    ui.painter().galley(r.center() - g.size() / 2.0, g, BLUE);
+    ui.painter().galley(r.center() - g.size() / 2.0, g, BLUE());
 }
 
 fn btn(ui: &mut Ui, text: &str, fill: Color32, fg: Color32) -> Response {
@@ -5050,7 +5158,7 @@ fn file_stem_of(p: &std::path::Path) -> String {
 
 fn kind_look(k: OpKind) -> (Glyph, Color32) {
     match k {
-        OpKind::Copy => (Glyph::Copy, BLUE),
+        OpKind::Copy => (Glyph::Copy, BLUE()),
         OpKind::Move => (Glyph::ArrowRight, GREEN),
         OpKind::Delete => (Glyph::Trash, RED),
         OpKind::Archive => (Glyph::Archive, ORANGE),
@@ -5136,7 +5244,7 @@ fn queue_row(ui: &mut Ui, t: &Task, first_pending: bool, last_pending: bool, ops
                     if icon_btn(ui, Glyph::Close, MUTED(), tr!("Убрать из списка", "Remove from list")).clicked() {
                         ops.push(QueueOp::Remove(t.id));
                     }
-                    if icon_btn(ui, Glyph::Refresh, BLUE, tr!("Повторить", "Retry")).clicked() {
+                    if icon_btn(ui, Glyph::Refresh, BLUE(), tr!("Повторить", "Retry")).clicked() {
                         ops.push(QueueOp::Retry(t.id));
                     }
                 }
@@ -5164,7 +5272,7 @@ fn queue_full(ui: &mut Ui, q: &Queue, ops: &mut Vec<QueueOp>) {
                 ops.push(QueueOp::Close);
             }
             if q.paused || pending > 0 {
-                let (label, fg) = if q.paused { (tr!("Продолжить", "Resume"), BLUE) } else { (tr!("Пауза", "Pause"), TEXT_SOFT()) };
+                let (label, fg) = if q.paused { (tr!("Продолжить", "Resume"), BLUE()) } else { (tr!("Пауза", "Pause"), TEXT_SOFT()) };
                 if small_btn(ui, label, fg).on_hover_text(tr!("Текущая операция доработает, следующие не начнутся", "The current operation will finish, the next ones won’t start")).clicked() {
                     ops.push(QueueOp::Pause);
                 }
@@ -5210,7 +5318,7 @@ fn queue_compact(ui: &mut Ui, q: &Queue, ops: &mut Vec<QueueOp>) {
         };
         ui.label(RichText::new(note).size(12.0).color(MUTED()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if small_btn(ui, tr!("Вся очередь", "Whole queue"), BLUE).on_hover_text("Ctrl+J").clicked() {
+            if small_btn(ui, tr!("Вся очередь", "Whole queue"), BLUE()).on_hover_text("Ctrl+J").clicked() {
                 ops.push(QueueOp::Open);
             }
         });

@@ -70,7 +70,7 @@ pub fn parent(p: &Painter, r: Rect) {
     let side = r.height().min(r.width());
     let t = Rect::from_center_size(r.center(), vec2(side, side));
     p.rect_filled(t, CornerRadius::from(side * 0.24), BLUE_SOFT());
-    glyph(p, t.shrink(side * 0.16), Glyph::ArrowUp, BLUE);
+    glyph(p, t.shrink(side * 0.16), Glyph::ArrowUp, BLUE());
 }
 
 /// Drive tile for the "This PC" view.
