@@ -172,9 +172,9 @@ impl QuokkaApp {
         let width = 560.0_f32.min(ctx.content_rect().width() - 64.0);
         dialog(ctx, "update", width, |ui| match &d.phase {
             Phase::Checking => {
-                dialog_header(ui, Glyph::Download, BLUE, tr!("Проверка обновлений", "Checking for updates"), Some(&trf!("Установлена версия {}", "Installed version {}", current())));
+                dialog_header(ui, Glyph::Download, BLUE(), tr!("Проверка обновлений", "Checking for updates"), Some(&trf!("Установлена версия {}", "Installed version {}", current())));
                 ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(16.0).color(BLUE));
+                    ui.add(egui::Spinner::new().size(16.0).color(BLUE()));
                     ui.label(RichText::new(tr!("Связываюсь с GitHub…", "Contacting GitHub…")).color(TEXT_SOFT()));
                 });
                 ui.add_space(14.0);
@@ -212,7 +212,7 @@ impl QuokkaApp {
                 dialog_header(
                     ui,
                     Glyph::Download,
-                    BLUE,
+                    BLUE(),
                     &trf!("Доступна версия {}", "Version {} is available", r.version),
                     Some(&trf!("У вас {}", "You have {}", current())),
                 );
@@ -263,11 +263,11 @@ impl QuokkaApp {
                 });
             }
             Phase::Downloading { release, progress, cancel } => {
-                dialog_header(ui, Glyph::Download, BLUE, &trf!("Загрузка версии {}", "Downloading version {}", release.version), None);
+                dialog_header(ui, Glyph::Download, BLUE(), &trf!("Загрузка версии {}", "Downloading version {}", release.version), None);
                 let (done, total) = (progress.done.load(Ordering::Relaxed), progress.total.load(Ordering::Relaxed));
                 let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
                 let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::hover());
-                icons::bar(ui.painter(), r, frac, BLUE);
+                icons::bar(ui.painter(), r, frac, BLUE());
                 ui.add_space(8.0);
                 let text = if total > 0 {
                     trf!("{} из {}", "{} of {}", format_size(done), format_size(total))

@@ -151,7 +151,7 @@ impl ConnectDialog {
             if sftp && button(ui, 0, 5, Glyph::Terminal, TEXT_SOFT(), tr!("SSH-терминал (PuTTY / ssh)", "SSH terminal (PuTTY / ssh)")).clicked() {
                 act = RowAction::Terminal;
             }
-            if button(ui, 1, 0, Glyph::ArrowRight, BLUE, tr!("Подключиться", "Connect")).clicked() {
+            if button(ui, 1, 0, Glyph::ArrowRight, BLUE(), tr!("Подключиться", "Connect")).clicked() {
                 act = RowAction::Connect;
             }
             if button(ui, 2, 1, Glyph::Pencil, TEXT_SOFT(), tr!("Изменить", "Edit")).clicked() {
@@ -351,7 +351,7 @@ impl ConnectDialog {
 
         let width = 840.0_f32.min(ctx.content_rect().width() - 48.0);
         dialog(ctx, "server-connect", width, |ui| {
-            dialog_header(ui, Glyph::Cloud, BLUE, tr!("Подключение к серверу", "Connect to a server"),
+            dialog_header(ui, Glyph::Cloud, BLUE(), tr!("Подключение к серверу", "Connect to a server"),
                 Some(tr!("SFTP, FTP и FTPS · сохранённые подключения слева", "SFTP, FTP and FTPS · saved connections on the left")));
 
             if let Some(fp) = self.unknown_key.clone() {
@@ -366,7 +366,7 @@ impl ConnectDialog {
                     "Compare it with the fingerprint from the server administrator. The key will be saved to ~/.ssh/known_hosts.")).color(MUTED()).size(13.0));
                 ui.add_space(14.0);
                 buttons_row(ui, |ui| {
-                    if btn(ui, tr!("Доверять и подключить", "Trust and connect"), BLUE, Color32::WHITE).clicked() {
+                    if btn(ui, tr!("Доверять и подключить", "Trust and connect"), BLUE(), Color32::WHITE).clicked() {
                         trust = true;
                     }
                     if btn(ui, tr!("Отмена", "Cancel"), INPUT_BG(), TEXT()).clicked() {
@@ -519,7 +519,7 @@ impl ConnectDialog {
                             ui.add(egui::Spinner::new());
                             ui.label(RichText::new(tr!("Подключение…", "Connecting…")).color(MUTED()));
                         } else {
-                            if btn(ui, tr!("Подключить", "Connect"), BLUE, Color32::WHITE).clicked() {
+                            if btn(ui, tr!("Подключить", "Connect"), BLUE(), Color32::WHITE).clicked() {
                                 submit = true;
                             }
                             if btn(ui, tr!("Сохранить", "Save"), INPUT_BG(), TEXT()).clicked() {

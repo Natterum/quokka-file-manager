@@ -335,8 +335,9 @@ impl QuokkaApp {
             p.path.display().to_string()
         };
         let mut fd = self.find.take().unwrap_or_else(|| FindDialog::new(self.settings.show_hidden));
+        // the folder always follows the active pane; the last results stay visible
+        fd.roots = here;
         if fd.search.as_ref().map_or(true, |s| s.hits.is_empty() && !s.running) {
-            fd.roots = here;
             fd.search = None;
         }
         fd.focus_mask = fd.search.is_none();
@@ -425,7 +426,7 @@ impl QuokkaApp {
                     match &fd.search {
                         Some(s) => {
                             if s.running {
-                                ui.add(egui::Spinner::new().size(13.0).color(BLUE));
+                                ui.add(egui::Spinner::new().size(13.0).color(BLUE()));
                             }
                             let mut status = if s.running {
                                 trf!("найдено {n} · просмотрено файлов: {}, папок: {}", "found {n} · files scanned: {}, folders: {}", s.files, s.dirs)

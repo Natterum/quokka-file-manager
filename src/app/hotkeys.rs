@@ -457,13 +457,13 @@ fn chip(ui: &mut egui::Ui, text: &str, active: bool, changed: bool) -> egui::Res
     use crate::theme::*;
     use egui::{vec2, Sense, Stroke};
     let font = super::semibold(12.5);
-    let col = if active { BLUE } else { TEXT() };
+    let col = if active { BLUE() } else { TEXT() };
     let g = ui.painter().layout_no_wrap(text.to_string(), font, col);
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 18.0, 26.0), Sense::click());
     let (fill, stroke) = if active {
-        (BLUE_SOFT(), Stroke::new(1.5, BLUE))
+        (BLUE_SOFT(), Stroke::new(1.5, BLUE()))
     } else if resp.hovered() {
-        (BLUE_SOFT(), Stroke::new(1.0, BLUE))
+        (BLUE_SOFT(), Stroke::new(1.0, BLUE()))
     } else if changed {
         (WARN_BG(), Stroke::new(1.0, WARN_BORDER()))
     } else {

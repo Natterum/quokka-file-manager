@@ -296,7 +296,7 @@ impl QuickView {
                 let t = a + k as f32 / 24.0 * std::f32::consts::PI * 1.5;
                 c + vec2(t.cos(), t.sin()) * 14.0
             }).collect();
-            p.add(egui::Shape::line(points, Stroke::new(2.5, BLUE)));
+            p.add(egui::Shape::line(points, Stroke::new(2.5, BLUE())));
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
     }

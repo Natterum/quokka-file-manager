@@ -2,10 +2,13 @@
 
 use quokka_domain::tr;
 use crate::icons::Glyph;
-use crate::theme::{Appearance, ThemeMode};
+use crate::theme::{Appearance, ColorPreset, ThemeMode};
 use quokka_domain::lang::Lang;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
@@ -296,12 +299,148 @@ fn unesc(s: &str) -> String {
     out
 }
 
+/// The settings file exists but could not be read at start-up: saving must not
+/// replace it with the defaults this process fell back to.
+static UNREADABLE: AtomicBool = AtomicBool::new(false);
+
+/// What this process last read from or wrote to the settings file: its modification
+/// time and the addresses of the saved connections in it.
+static DISK: Mutex<Option<(Option<SystemTime>, Vec<String>)>> = Mutex::new(None);
+
+fn backup_path(path: &Path) -> PathBuf {
+    path.with_extension("bak")
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Read a settings file. Right after an update or at log-on the file can be held
+/// for a moment by an antivirus or the indexer, so a failed read is retried before
+/// giving up; a missing file is reported at once. Invalid UTF-8 is replaced, not refused.
+fn read_text(path: &Path) -> std::io::Result<String> {
+    let mut tries = 0;
+    loop {
+        match fs::read(path) {
+            Ok(bytes) => return Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(e),
+            Err(e) => {
+                tries += 1;
+                if tries >= 30 {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+/// Whether `text` has at least one line Quokka writes (an imported file must).
+fn looks_like_settings(text: &str) -> bool {
+    text.lines().any(|l| {
+        let key = l.split('\t').next().unwrap_or("");
+        matches!(key, "show_hidden" | "dual" | "places" | "place" | "connection" | "language" | "theme" | "hotkey")
+    })
+}
+
+fn remember_disk(path: &Path, s: &Settings) {
+    let urls = s.connections.iter().map(|c| c.url.clone()).collect();
+    *DISK.lock().unwrap_or_else(|e| e.into_inner()) = Some((modified(path), urls));
+}
+
 impl Settings {
     pub fn load() -> Settings {
-        let Some(text) = config_path().and_then(|p| fs::read_to_string(p).ok()) else {
-            return Settings::default();
+        let Some(path) = config_path() else { return Settings::default() };
+        let main = read_text(&path);
+        let s = match &main {
+            Ok(text) if !text.trim().is_empty() => Self::from_text(text),
+            _ => {
+                if matches!(&main, Err(e) if e.kind() != std::io::ErrorKind::NotFound) {
+                    UNREADABLE.store(true, Ordering::Relaxed);
+                }
+                // missing, empty or locked: the copy kept by the previous save
+                match read_text(&backup_path(&path)) {
+                    Ok(text) if looks_like_settings(&text) => Self::from_text(&text),
+                    _ => Settings::default(),
+                }
+            }
         };
-        Self::from_text(&text)
+        remember_disk(&path, &s);
+        s
+    }
+
+    /// Read settings exported from another computer (or a copy of `settings.txt`).
+    pub fn import(path: &Path) -> Result<Settings, String> {
+        let text = read_text(path).map_err(|e| e.to_string())?;
+        if !looks_like_settings(&text) {
+            return Err(tr!("Это не файл настроек Quokka", "This is not a Quokka settings file").into());
+        }
+        Ok(Self::from_text(&text))
+    }
+
+    /// Write the settings to `path` for moving them to another computer.
+    pub fn export(&self, path: &Path) -> Result<(), String> {
+        fs::write(path, self.to_text()).map_err(|e| e.to_string())
+    }
+
+    /// Server connections saved to the file by another Quokka window (or by the
+    /// previous version during an update) since this process last read or wrote it
+    /// are added, so this save does not drop them. Connections this process knew
+    /// and removed stay removed.
+    fn merge_from_disk(&mut self, path: &Path) {
+        let disk = DISK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some((stamp, known)) = disk else { return };
+        if modified(path) == stamp {
+            return;
+        }
+        let Ok(text) = read_text(path) else { return };
+        for c in Self::from_text(&text).connections {
+            if !known.contains(&c.url) && !self.connections.iter().any(|o| o.url == c.url) {
+                self.connections.push(c);
+            }
+        }
+    }
+
+    /// Save to `settings.txt`: written to a temporary file first and then put in
+    /// place, so a crash or a killed process never leaves a half-written file; the
+    /// previous version is kept as `settings.bak`.
+    pub fn save(&mut self) -> Result<(), String> {
+        let Some(path) = config_path() else { return Err(tr!("Не найдена папка настроек", "Settings folder not found").into()) };
+        if UNREADABLE.load(Ordering::Relaxed) {
+            if read_text(&path).is_ok_and(|t| !t.trim().is_empty()) {
+                return Err(tr!(
+                    "Файл настроек не читался при запуске — он не перезаписан. Перезапустите Quokka.",
+                    "The settings file could not be read at start-up, so it was not overwritten. Restart Quokka."
+                )
+                .into());
+            }
+            UNREADABLE.store(false, Ordering::Relaxed);
+        }
+        self.merge_from_disk(&path);
+        let out = self.to_text();
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let tmp = path.with_extension("tmp");
+        {
+            use std::io::Write;
+            let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+            f.write_all(out.as_bytes()).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
+        }
+        if fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+            let _ = fs::copy(&path, backup_path(&path));
+        }
+        let mut tries = 0;
+        while let Err(e) = fs::rename(&tmp, &path) {
+            tries += 1;
+            if tries >= 20 {
+                let _ = fs::remove_file(&tmp);
+                return Err(e.to_string());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        remember_disk(&path, self);
+        Ok(())
     }
 
     fn from_text(text: &str) -> Self {
@@ -337,6 +476,8 @@ impl Settings {
                 ["font", v] if !v.is_empty() => s.appearance.font = unesc(v),
                 ["rounding", v] => s.appearance.rounding = v.parse::<u8>().map_or(100, |r| r.min(100)),
                 ["theme", v] => s.appearance.theme = ThemeMode::from_key(v).unwrap_or_default(),
+                ["preset_light", v] => s.appearance.light_preset = ColorPreset::from_key(v).unwrap_or_default(),
+                ["preset_dark", v] => s.appearance.dark_preset = ColorPreset::from_key(v).unwrap_or_default(),
                 ["rename_mask", v] if s.rename_masks.len() < HISTORY_LEN => s.rename_masks.push(unesc(v)),
                 ["session_active", v] => s.session.active = usize::from(*v == "1"),
                 [key @ ("session_tab_left" | "session_tab_right"), v] => {
@@ -445,10 +586,12 @@ update_skip	{}
             esc(&self.update_skip)
         ));
         out.push_str(&format!(
-            "font\t{}\nrounding\t{}\ntheme\t{}\n",
+            "font\t{}\nrounding\t{}\ntheme\t{}\npreset_light\t{}\npreset_dark\t{}\n",
             esc(&self.appearance.font),
             self.appearance.rounding.min(100),
-            self.appearance.theme.key()
+            self.appearance.theme.key(),
+            self.appearance.light_preset.key(),
+            self.appearance.dark_preset.key()
         ));
         for m in &self.rename_masks {
             out.push_str(&format!("rename_mask	{}
@@ -489,14 +632,6 @@ update_skip	{}
         out
     }
 
-    pub fn save(&self) -> Result<(), String> {
-        let Some(path) = config_path() else { return Err(tr!("Не найдена папка настроек", "Settings folder not found").into()) };
-        let out = self.to_text();
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        fs::write(&path, out).map_err(|e| e.to_string())
-    }
 }
 
 #[cfg(test)]
@@ -623,10 +758,37 @@ mod tests {
     fn appearance_default_and_round_trip() {
         assert_eq!(Settings::from_text("").appearance, Appearance::default());
         let mut s = Settings::default();
-        s.appearance = Appearance { font: "segoe".into(), rounding: 35, theme: ThemeMode::Dark };
+        s.appearance = Appearance {
+            font: "segoe".into(),
+            rounding: 35,
+            theme: ThemeMode::Dark,
+            light_preset: ColorPreset::Forest,
+            dark_preset: ColorPreset::Lavender,
+        };
         assert_eq!(Settings::from_text(&s.to_text()).appearance, s.appearance);
-        let bad = Settings::from_text("rounding\t250\ntheme\tneon\n").appearance;
-        assert_eq!((bad.rounding, bad.theme), (100, ThemeMode::Light));
+        let bad = Settings::from_text("rounding\t250\ntheme\tneon\npreset_light\tneon\n").appearance;
+        assert_eq!((bad.rounding, bad.theme, bad.light_preset), (100, ThemeMode::Light, ColorPreset::Classic));
+    }
+
+    #[test]
+    fn import_needs_a_settings_file_and_reads_bad_utf8() {
+        let dir = std::env::temp_dir().join(format!("quokka-config-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut s = Settings::default();
+        s.connections = vec![Connection { name: "Прод".into(), url: "sftp://bob@host".into(), key_file: String::new(), save_password: true }];
+        let good = dir.join("export.txt");
+        s.export(&good).unwrap();
+        assert_eq!(Settings::import(&good).unwrap().connections, s.connections);
+        let other = dir.join("notes.txt");
+        fs::write(&other, "hello\nworld\n").unwrap();
+        assert!(Settings::import(&other).is_err());
+        // a broken byte does not cost the whole file
+        let mut bytes = s.to_text().into_bytes();
+        bytes.splice(0..0, b"\xff\xfe junk\n".iter().copied());
+        fs::write(&other, bytes).unwrap();
+        assert_eq!(Settings::import(&other).unwrap().connections, s.connections);
+        assert!(matches!(read_text(&dir.join("missing.txt")), Err(e) if e.kind() == std::io::ErrorKind::NotFound));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

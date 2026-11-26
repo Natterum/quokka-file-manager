@@ -138,15 +138,15 @@ fn section(ui: &mut Ui, text: &str) {
 fn format_tile(ui: &mut Ui, f: ImageFormat, selected: bool, width: f32) -> Response {
     let (r, resp) = ui.allocate_exact_size(vec2(width, 34.0), Sense::click());
     let (fill, stroke) = if selected {
-        (BLUE_SOFT(), BLUE)
+        (BLUE_SOFT(), BLUE())
     } else if resp.hovered() {
-        (HOVER(), mix(BORDER(), BLUE, 0.4))
+        (HOVER(), mix(BORDER(), BLUE(), 0.4))
     } else {
         (INPUT_BG(), BORDER())
     };
     let p = ui.painter();
     p.rect(r, rad(8.0), fill, Stroke::new(1.0, stroke), eframe::egui::StrokeKind::Middle);
-    let g = p.layout_no_wrap(f.label().to_string(), semibold(13.5), if selected { BLUE } else { TEXT() });
+    let g = p.layout_no_wrap(f.label().to_string(), semibold(13.5), if selected { BLUE() } else { TEXT() });
     p.galley(r.center() - g.size() / 2.0, g, TEXT());
     resp.on_hover_text(f.hint()).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
